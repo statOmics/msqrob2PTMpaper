@@ -1,0 +1,502 @@
+---
+title: "ubiquitin analysis"
+output:
+  html_document:
+    code_download: yes
+    theme: cosmo
+    toc: yes
+    toc_depth: 4
+    toc_float:
+      collapsed: yes
+    highlight: tango
+    number_sections: yes
+    df_print: paged
+  pdf_document:
+    toc: yes
+    toc_depth: '4'
+---
+
+
+```{r}
+library(tidyverse)
+library(MSstatsPTM)
+library(QFeatures)
+library(msqrob2)
+library(gt)
+library(seqinr)
+library(data.table)
+library(lme4)
+```
+
+```{r, setup, include=FALSE}
+knitr::opts_knit$set(root.dir="C:/Users/Nina/OneDrive - UGent/Documenten/Doctoraat/msqrobPTM paper/biological ubiquitin dataset/")
+```
+
+
+```{r}
+load("usp30_input_data.rda")
+```
+
+
+``` {r}
+#PTM level and Protein level data
+head(raw_input_data)
+```
+
+# MSstatsPTM analysis
+
+The MSstats workflow and the input data was found on Massive: https://massive.ucsd.edu/ProteoSAFe/dataset_files.jsp?task=f9e6117e00794ce5b2e8802601be16bc#%7B%22table_sort_history%22%3A%22main.collection_asc%22%7D
+
+```{r}
+## Convert to MSstatsPTM input format
+raw_input_data$FragmentIon <- NA
+raw_input_data$ProductCharge <- NA
+raw_input_data$IsotopeLabelType <- 'L'
+raw_input_data <- raw_input_data %>% 
+  mutate(PrecursorCharge = stringr::str_split(
+    raw_input_data$feature, "_", simplify = TRUE)[,2])
+
+colnames(raw_input_data) <- c('ProteinName', 'PeptideSequence', 'is_mod', 'Feature', 
+                            'Condition', "Batch", "Run", 'Intensity', 'site', 'FragmentIon',
+                            'ProductCharge', 'IsotopeLabelType', 'PrecursorCharge')
+
+raw_input_data$BioReplicate <- raw_input_data$Batch
+raw_input_data$Intensity <- 2^raw_input_data$Intensity
+```
+
+
+
+```{r}
+## Split modified and unmodified peptides
+PTM_df <- raw_input_data %>% filter(is_mod == TRUE)
+PTM_df$ProteinName <- paste(PTM_df$ProteinName, PTM_df$site, sep = '_')
+protein_df <- raw_input_data %>% filter(is_mod == FALSE)
+```
+
+
+```{r}
+## Remove unneeded columns
+drops <- c("is_mod", "site", "Batch", "Feature")
+PTM_df <- PTM_df[ , !(names(PTM_df) %in% drops)]
+protein_df <- protein_df[ , !(names(protein_df) %in% drops)]
+
+input_df <- list('PTM' = PTM_df, 'PROTEIN' = protein_df)
+```
+
+## summarisation
+
+```{r}
+## Summarize features
+summarized_ptm <- dataSummarizationPTM(input_df, verbose = F)
+## Model summarized results
+## Full pairwise comparison used
+model_ptm <- groupComparisonPTM(summarized_ptm, data.type = "LabelFree")
+```
+
+```{r eval=FALSE, include=FALSE}
+save(summarized_ptm, file ="C:/Users/Nina/OneDrive - UGent/Documenten/Doctoraat/msqrobPTM/biological ubiquitin dataset/MSstatsSummarizedData.RData")
+save(model_ptm, file = "C:/Users/Nina/OneDrive - UGent/Documenten/Doctoraat/msqrobPTM/biological ubiquitin dataset/MSstatsModel.rda")
+```
+
+# Msqrob2PTM analysis
+
+## Start from raw data
+
+```{r}
+load("usp30_input_data.rda")
+raw_input_data <- raw_input_data %>% arrange(run)
+pepform_df <- pivot_wider(raw_input_data, id_cols = c("protein", "peptide", "feature", "site"),
+                           names_from = "run", values_from = "log2inty")
+```
+
+```{r}
+head(pepform_df, 10)
+```
+
+```{r}
+pepform_df = pepform_df %>%
+                  mutate(site = case_when(site == "None" ~ "",
+                        TRUE ~ site)) %>% 
+                  mutate(ptm = case_when(
+                    site != "" ~ paste(protein, site, sep = "_"),
+                        TRUE ~ "")) 
+head(pepform_df, 20)
+```
+
+### Transform into QFeatures object
+
+```{r}
+#order dataframe by protein, for the normalisation step
+pepform_df = pepform_df[order(pepform_df$protein),]
+pe <- readQFeatures(pepform_df,ecol= 5:20,name="peptidoformRaw", fnames = "feature")
+```
+
+```{r}
+colData(pe)$group <- sapply(str_split(rownames(colData(pe)), "-"), function(x) x[1])
+colData(pe)$biorep <- gsub("T[0-9]", "", rownames(colData(pe)))
+colData(pe)$techrep <- rownames(colData(pe))
+
+colData(pe)$group <- relevel(as.factor(colData(pe)$group), ref="Ctrl")
+colData(pe)$biorep <- as.factor(colData(pe)$biorep)
+colData(pe)$techrep <- as.factor(colData(pe)$techrep)
+
+colData(pe)
+```
+
+### Preprocessing
+
+```{r}
+print(nrow(pe[["peptidoformRaw"]]))
+rowData(pe[["peptidoformRaw"]])$nNonZero <- rowSums(assay(pe[["peptidoformRaw"]]) > 0, na.rm = T)
+pe <- zeroIsNA(pe, i = "peptidoformRaw")
+pe <- pe[rowData(pe[["peptidoformRaw"]])$nNonZero>2,,]
+pe <- normalize(pe, i = "peptidoformRaw", method = "center.median", name = "peptidoform")
+print(nrow(pe[["peptidoform"]]))
+```
+
+```{r}
+boxplot(assay(pe[["peptidoform"]]))
+```
+
+### Normalize pepform log intensity by protein log intensity
+
+First one is for visualisation purposes
+```{r,warning=FALSE}
+pe <- aggregateFeatures(pe,
+ i = "peptidoformRaw",
+ fcol = "protein",
+ na.rm = TRUE,
+ name = "proteinRaw",
+ fun = MsCoreUtils::robustSummary)
+```
+
+```{r,warning=FALSE}
+pe <- aggregateFeatures(pe,
+ i = "peptidoform",
+ fcol = "protein",
+ na.rm = TRUE,
+ name = "proteinRobust",
+ fun = MsCoreUtils::robustSummary)
+```
+
+```{r}
+#Only take pepforms that have a parent protein
+#(when there is no global profiling dataset, this will be all peptidoforms)
+pepWithProtein <- rowData(pe[["peptidoform"]])$protein %in% rownames(pe[["proteinRobust"]])
+pepepWithProtein  <- pe[["peptidoform"]][pepWithProtein,]
+pe <- addAssay(pe,pepepWithProtein,"pepformRel")
+#normalisation for protein abundance step
+assay(pe[["pepformRel"]]) <- assay(pe[["pepformRel"]]) - assay(pe[["proteinRobust"]])[rowData(pe[["pepformRel"]])$protein,colnames(assay(pe[["pepformRel"]]))]
+boxplot(assay(pe[["pepformRel"]]))
+```
+
+### ptm summarisatie
+
+Summarise peptidoforms to ptm level
+
+#### Get ptm level intensity matrix
+
+Get matrix for DPTMx -> get summarised intensity values
+
+```{r}
+ptms <- unique(as.vector(rowData(pe[["pepformRel"]])$ptm))
+ptms <- ptms[-c(which(ptms==""))]
+```
+
+
+```{r, warning = F}
+#For each ptm do
+ptm_x_assay <- sapply(unique(ptms), function(i){ 
+  #print(i)
+  #Get current protein and mod from ptm
+  #This is pretty straightforward here because there is only 1 ptm per peptidoform
+  ptm_sub <- pe[["pepformRel"]][grepl(i, rowData(pe[["pepformRel"]])$ptm, fixed = T),]
+  #ptm_sub <- filterFeatures(pe,~grepl(ptm,pattern=i, fixed=T))[["peptidoformNorm"]]
+  #Get intensity values of those peptidoforms
+  z <- assay(ptm_sub)
+  z <- filter(as.data.frame(z), rowSums(is.na(z) | z==0) != ncol(z))
+  #And summarise them to 1 row of intensity values: 1 value per sample for that ptm
+  ptm_y <- try(MsCoreUtils::robustSummary(as.matrix(z)), silent = T)
+  if (is(ptm_y, "try-error"))
+  {ptm_y <- matrix(rep(NA,ncol(ptm_sub)), nrow = 1, 
+                     dimnames = list(c(i), c(colnames(ptm_sub))))} 
+
+  ptm_y
+})
+#Then we get the intensity assay on ptm level
+ptm_x_assay <- t(ptm_x_assay)
+#rownames(ptm_x_assay) <- ptms
+```
+
+#### Add to QFeatures object
+
+Filter out ptms with all zero intensities or with the same intensity in every column
+
+```{r}
+print(paste(nrow(ptm_x_assay), "ptms before filtering"))
+filtering <- (rowSums(ptm_x_assay != 0, na.rm=TRUE)) > 0 & 
+  (rowSds(ptm_x_assay, na.rm=TRUE) > 1e-4) & 
+          (rowSums(is.na(ptm_x_assay)) < (ncol(ptm_x_assay)-1))
+ptm_x_assay <- ptm_x_assay[filtering,]
+print(paste(nrow(ptm_x_assay), "ptms after filtering"))
+```
+
+```{r}
+all(rownames(colData(pe)) == colnames(ptm_x_assay))
+rowdata <- data.frame(ptm = rownames(ptm_x_assay))
+rowdata$protein <- sapply(str_split(rowdata$ptm, pattern="_"),function(x) x[1])
+ptm_y_assay <- SummarizedExperiment(assays=as.matrix(ptm_x_assay), rowData=rowdata, colData=colData(pe))
+```
+
+```{r}
+pe <- addAssay(pe, ptm_y_assay, "ptmRel")
+```
+
+## Start from MSstats summarised data
+
+PTM
+```{r}
+#Get to wide format for msqrob
+ptm_df <- pivot_wider(summarized_ptm$PTM$ProteinLevelData, id_cols = c("Protein"),
+                         names_from = "originalRUN", values_from = "LogIntensities")
+ptm_df <- ptm_df %>% dplyr::rename(PROTEIN_PTM = Protein)
+ptm_df$PROTEIN =  paste(sapply(ptm_df$PROTEIN_PTM, function (x) {str_split(x, "_")[[1]][1]}))
+```
+
+PROTEIN
+
+```{r}
+#Get to wide format for msqrob
+protein_df <- summarized_ptm$PROTEIN$ProteinLevelData %>% arrange(originalRUN) %>%
+              pivot_wider(id_cols = c("Protein"),
+                         names_from = "originalRUN", values_from = "LogIntensities")
+nrow(protein_df)
+```
+
+-> There are few proteins left here, because there are few proteins that have a non-modified peptide identified for them. 
+
+### Add to QFeatures object
+
+```{r}
+#order dataframe by protein, for the normalisation step
+ptm_df = ptm_df[order(ptm_df$PROTEIN),]
+ptm <- readQFeatures(ptm_df,ecol= 2:17,name="ptmMSstats", fnames = "PROTEIN_PTM")
+prot <- readQFeatures(protein_df,ecol= 2:17,name="protein",fnames="Protein")
+#y_assay <- SummarizedExperiment(assays=as.matrix(y_new), rowData=rowdata, colData=colData(pe[["peptidoformRaw"]]))
+pe <- addAssay(pe, ptm[["ptmMSstats"]], name = "ptmMSstats")
+pe <- addAssay(pe, prot[["protein"]], name = "proteinMSstats")
+```
+
+The MSstats data is already preprocessed
+
+```{r}
+boxplot(assay(pe[["ptmMSstats"]]))
+```
+
+
+
+MSstats input data normalisation (PTM)
+
+### Normalize PTM log intensity by protein log intensity
+
+```{r}
+#Only take ptms that have a parent protien
+ptmWithProteinEvalue <- rowData(pe[["ptmMSstats"]])$PROTEIN %in% rownames(pe[["proteinMSstats"]])
+ptmM <- pe[["ptmMSstats"]][ptmWithProteinEvalue,]
+pe <- addAssay(pe,ptmM,"ptmMSstatsRel")
+assay(pe[["ptmMSstatsRel"]]) <- assay(pe[["ptmMSstatsRel"]]) - assay(pe[["proteinMSstats"]])[rowData(pe[["ptmMSstatsRel"]])$PROTEIN,colnames(assay(pe[["ptmMSstatsRel"]]))]
+boxplot(assay(pe[["ptmMSstatsRel"]]))
+```
+
+```{r}
+pe
+```
+
+peptidoformRaw = raw peptidoform (log) intensities 
+peptidoform = center median normalised peptidoform intensities
+ptmMSstats = ptm data according to MSstats summarisation
+proteinMSstats = protein data according to MSstats
+proteinRaw = peptidoformRaw -> protein
+proteinRobust = peptidoform -> protein
+pepformRel = peptidoform normalised for protein abundance
+ptmRel = ptm normalised for protein abundance when starting from raw data (typical msqrob2PTM workflow)
+ptmMSstatsRel = ptm normalised for protein abundance when starting from MSstats summarisation
+
+```{r}
+nrow(assay(pe[["ptmMSstatsRel"]]))
+nrow(assay(pe[["ptmRel"]]))
+```
+
+## Analysis
+
+### Peptidoform analysis
+
+Only possible when starting from the raw data
+
+#### Hypothesistest for each contrast
+
+```{r, warning=FALSE}
+pe <- msqrob2::msqrob(object = pe, i = "pepformRel", formula = ~group + (1|biorep), robust = F, overwrite = T)
+getCoef(rowData(pe[["pepformRel"]])$msqrobModels[[2]])
+```
+
+
+```{r}
+contrasts <- c("groupCombo", "groupCCCP", "groupUSP30_OE", "groupCombo - groupCCCP",
+               "groupCCCP - groupUSP30_OE", "groupCombo - groupUSP30_OE")
+```
+
+```{r}
+L <- makeContrast(c("groupCombo = 0", 
+                    "groupCCCP = 0", 
+                    "groupUSP30_OE = 0", 
+                    "groupCombo - groupCCCP = 0",
+                    "groupCCCP - groupUSP30_OE = 0", 
+                    "groupCombo - groupUSP30_OE = 0"), 
+                  parameterNames = rowData(pe[["pepformRel"]])$msqrobModels[[2]] %>%
+                  getCoef %>%
+                  names)
+pe <- hypothesisTest(object = pe, i = "pepformRel", contrast = L, overwrite=T)
+```
+
+
+#### Volcanoplot 
+
+```{r}
+volcano <- list()
+for (contrast in contrasts){
+volcano[[contrast]] <- rowData(pe[["pepformRel"]])[[contrast]]%>%
+            ggplot(aes(x = logFC, y = -log10(pval), 
+                   color = adjPval < 0.05,
+                   annotation=rowData(pe[["pepformRel"]])[,3])) +
+  geom_point(cex = 2.5) +
+  scale_color_manual(values = alpha(c("black", "red"), 0.5)) + 
+  theme_minimal() +
+  ylab("-log10(pvalue)") +
+  ggtitle(contrast)
+}
+volcano
+```
+
+#### Significant peptidoforms for each contrast
+
+```{r}
+tables <- list()
+for (contrast in contrasts){
+sigTable <- rowData(pe[["pepformRel"]])[[contrast]]
+if(nrow(sigTable %>%
+  na.exclude %>%
+  filter(adjPval<0.05)) > 0){
+sigTable <- sigTable %>%
+  na.exclude %>%
+  filter(adjPval<0.05) %>%
+  arrange(pval) %>%
+  mutate(
+    se = format(se, digits = 2), 
+    df = format(df, digits =2),
+    t = format(t, digits = 2),
+    adjPval = format(adjPval, digits = 3),
+    rank = 1:length(logFC) 
+  ) 
+sigTable_print <- sigTable %>% mutate(peptidoform = rownames(sigTable)) %>% gt() %>% tab_header(title = md(contrast))
+tables[[contrast]] <- sigTable
+}
+#knitr::kable(sigTable, caption = contrast)
+}
+knitr::kable(tables)
+```
+
+### PTM level analysis
+
+
+
+```{r}
+pe <- msqrob2::msqrob(object = pe, i = "ptmRel", formula = ~group+(1|biorep), robust=TRUE, overwrite = T)
+pe <- msqrob2::msqrob(object = pe, i = "ptmMSstatsRel", formula = ~group+(1|biorep), robust=TRUE, overwrite = T)
+
+pe <- hypothesisTest(object = pe, i = "ptmMSstatsRel", contrast = L, overwrite = T)
+pe <- hypothesisTest(object = pe, i = "ptmRel", contrast = L, overwrite = T)
+```
+
+### Significant ptms for each contrast
+
+```{r}
+volcano <- list()
+for (contrast in contrasts){
+volcano[[contrast]] <- rowData(pe[["ptmRel"]])[[contrast]]%>%
+            ggplot(aes(x = logFC, y = -log10(pval), 
+                   color = adjPval < 0.05,
+                   annotation=rowData(pe[["ptmRel"]])[,3])) +
+  geom_point(cex = 2.5) +
+  scale_color_manual(values = alpha(c("black", "red"), 0.5)) + 
+  theme_minimal() +
+  ylab("-log10(pvalue)") +
+  ggtitle(contrast)
+}
+volcano
+```
+
+```{r}
+tables <- list()
+for (contrast in contrasts){
+sigTable <- rowData(pe[["ptmRel"]])[[contrast]]
+if(nrow(sigTable %>%
+  na.exclude %>%
+  filter(adjPval<0.05))>0){
+sigTable <- sigTable %>%
+  na.exclude %>%
+  filter(adjPval<0.05) %>%
+  arrange(pval) %>%
+  mutate(
+    se = format(se, digits = 2), 
+    df = format(df, digits =2),
+    t = format(t, digits = 2),
+    adjPval = format(adjPval, digits = 3),
+    rank = 1:length(logFC) 
+  ) 
+sigTable_print <- sigTable %>% mutate(peptidoform = rownames(sigTable)) %>% gt() %>% tab_header(title = md(contrast))
+tables[[contrast]] <- sigTable
+}
+}
+knitr::kable(tables)
+```
+
+```{r}
+tables <- list()
+for (contrast in contrasts){
+sigTable <- rowData(pe[["ptmMSstatsRel"]])[[contrast]]
+if(nrow(sigTable %>%
+  na.exclude %>%
+  filter(adjPval<0.05))>0){
+sigTable <- sigTable %>%
+  na.exclude %>%
+  filter(adjPval<0.05) %>%
+  arrange(pval) %>%
+  mutate(
+    se = format(se, digits = 2), 
+    df = format(df, digits =2),
+    t = format(t, digits = 2),
+    adjPval = format(adjPval, digits = 3),
+    rank = 1:length(logFC) 
+  ) 
+sigTable_print <- sigTable %>% mutate(peptidoform = rownames(sigTable)) %>% gt() %>% tab_header(title = md(contrast))
+tables[[contrast]] <- sigTable
+}
+}
+knitr::kable(tables)
+```
+
+```{r eval=FALSE, include=FALSE}
+save(pe, file = "C:/Users/Nina/OneDrive - UGent/Documenten/Doctoraat/msqrobPTM/biological ubiquitin dataset/pe_ubiquitin_msqrob.rda")
+```
+
+Significant ptms from MSstats analysis
+
+```{r}
+for (contrast in model_ptm$ADJUSTED.Model$Label %>% unique){
+  print(contrast)
+  print(model_ptm$ADJUSTED.Model %>% filter(Label==contrast, adj.pvalue <= 0.05, Adjusted == T))
+}
+```
+
+We can see a lot higher number of significant ptms here.

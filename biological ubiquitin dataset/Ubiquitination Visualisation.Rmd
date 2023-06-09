@@ -1,0 +1,1014 @@
+---
+title: "Ubiquitination visualisation"
+output:
+  html_document:
+    code_download: yes
+    theme: cosmo
+    toc: yes
+    toc_depth: 4
+    toc_float:
+      collapsed: yes
+    highlight: tango
+    number_sections: yes
+    df_print: paged
+  pdf_document:
+    toc: yes
+    toc_depth: '4'
+---
+
+```{r}
+library(tidyverse)
+library(MSstatsPTM)
+library(lme4)
+library(msqrob2)
+library(data.table)
+```
+
+
+Load in all data
+
+```{r}
+directory = "C:/Users/Nina/OneDrive - UGent/Documenten/Doctoraat/msqrobPTM paper/biological ubiquitin dataset/"
+#MSStats data
+load(paste0(directory, "MSstatsSummarizedData.RData"))
+load(paste0(directory, "MSstatsModel.rda"))
+#Msqrob
+load("pe_ubiquitin_msqrob.rda")
+```
+
+
+# MSstats
+
+estimated ptm abundance ->fixef(model_ptm$Model.Details$PTM[[100]]) 
+protein abundance (for protein i) -> summarized_ptm$PROTEIN$ProteinLevelData %>% filter(Protein == i) %>% pull(LogIntensities)
+ptm abundance (for ptm i) -> summarized_ptm$PTM$ProteinLevelData %>% filter(Protein == i) %>% pull(LogIntensities)
+normalised ptm abundance ->  model_ptm$Model.Details$PTM[[100]] - model_ptm$Model.Details$PROTEIN[[100]]
+
+At the moment, only in the GitHub version, a detailed model gets outputted with info on the
+estimates on everything, so I used that here
+
+
+```{r, fig.width=8, fig.height=10}
+originalRUN <- c("CCCP-B1T1", "CCCP-B1T2", "CCCP-B2T1", "CCCP-B2T2", "Combo-B1T1", 
+                 "Combo-B1T2", "Combo-B2T1", "Combo-B2T2", "Ctrl-B1T1", "Ctrl-B1T2",   
+                 "Ctrl-B2T1", "Ctrl-B2T2", "USP30_OE-B1T1", "USP30_OE-B1T2", 
+                 "USP30_OE-B2T1", "USP30_OE-B2T2")
+GROUP <- sapply(strsplit(originalRUN, "-"), function(x) x[1])
+## Plot fourty ptm's from Combo vs Ctrl
+ptm_list1 <- model_ptm$ADJUSTED.Model %>% filter(Label == "Combo vs Ctrl") %>% filter(adj.pvalue <= 0.05) %>% head(40) %>% pull(Protein)
+all_ptms <- model_ptm$PTM.Model %>% pull(Protein) %>% unique()
+all_proteins <- model_ptm$PROTEIN.Model %>% pull(Protein) %>% unique()
+adjusted_ptms <- model_ptm$ADJUSTED.Model %>% pull(Protein) %>% unique()
+plots <- c()
+for (i in ptm_list1){
+  print(i)
+  prot <- strsplit(i, "_")[[1]][1]
+  index <- which(all_ptms == i)
+  index_prot <- which(all_proteins == prot)
+  index_adjusted <- which(adjusted_ptms == i)
+#Protein abundance
+protein <- tibble(originalRUN, GROUP)
+protein$FeatureType <- "Protein"
+protein$Protein <- prot
+tmp <- summarized_ptm$PROTEIN$ProteinLevelData %>% filter(Protein == prot) %>%
+  select(c(LogIntensities, originalRUN))
+missing_runs <- setdiff(originalRUN, tmp$originalRUN)
+tmp2 <- tibble(originalRUN = missing_runs, LogIntensities = NA)
+tmp3 <- rbind(tmp, tmp2) %>% arrange(originalRUN) %>% select(LogIntensities)
+protein <- cbind(protein, tmp3)
+
+#PTM abundance
+ptm_df <- summarized_ptm$PTM$ProteinLevelData %>% filter(Protein == i)
+ptm_df$Abundance <- ptm_df$LogIntensities
+ptm_df$FeatureType <- "PTM"
+ptm_df <- ptm_df %>% select(c("Protein", "LogIntensities", "originalRUN", 
+                                "GROUP", "FeatureType"))
+
+#PTM estimated (maar nog niet adjusted)
+Protein <- rep(i, length(originalRUN))
+ptm_estimate <- tibble(Protein)
+ptm_estimate$originalRUN <- originalRUN
+ptm_estimate$GROUP <- GROUP
+ptm_estimate$FeatureType <- "PTM_estimated"
+ptm_estimate$LogIntensities <- NA
+
+#Check that model estimates are definitely from that PTM
+if (class(model_ptm$Model.Details$PTM[[index]]) == "lm"){print(i)
+  }else{
+print(all(
+  summarized_ptm$PTM$ProteinLevelData %>% filter(Protein == i) %>% pull(LogIntensities) ==
+    getME(model_ptm$Model.Details$PTM[[index]], "y")
+))}
+
+if (class(model_ptm$Model.Details$PTM[[index]]) == "lm"){
+fixeffects <- model_ptm$Model.Details$PTM[[index]]$coefficients
+} else {fixeffects <- fixef(model_ptm$Model.Details$PTM[[index]])} 
+ptm_estimate[ptm_estimate$GROUP=="CCCP",]$LogIntensities <- 
+                                                    fixeffects[["(Intercept)"]]
+try(ptm_estimate[ptm_estimate$GROUP=="Combo",]$LogIntensities <- 
+   fixeffects[["(Intercept)"]] + fixeffects[grepl("Combo", names(fixeffects))])
+try(ptm_estimate[ptm_estimate$GROUP=="Ctrl",]$LogIntensities <- 
+   fixeffects[["(Intercept)"]] + fixeffects[grepl("Ctrl", names(fixeffects))])
+try(ptm_estimate[ptm_estimate$GROUP=="USP30_OE",]$LogIntensities <- 
+   fixeffects[["(Intercept)"]] + fixeffects[grepl("USP30_OE", names(fixeffects))])
+
+#Protein estimated (maar nog niet adjusted)
+Protein <- rep(prot, length(originalRUN))
+prot_estimate <- tibble(Protein)
+prot_estimate$originalRUN <- originalRUN
+prot_estimate$GROUP <- GROUP
+prot_estimate$FeatureType <- "Protein_estimated"
+prot_estimate$LogIntensities <- NA
+
+#Check that model estimates are definitely from that PTM
+if (class(model_ptm$Model.Details$PROTEIN[[index_prot]]) == "lmerMod"){
+  print(all(
+  summarized_ptm$PROTEIN$ProteinLevelData %>% filter(Protein == prot) %>% pull(LogIntensities) ==
+    getME(model_ptm$Model.Details$PROTEIN[[index_prot]], "y")))
+}
+
+if (class(model_ptm$Model.Details$PROTEIN[[index_prot]]) == "lm"){
+fixeffects <- model_ptm$Model.Details$PROTEIN[[index_prot]]$coefficients
+} else {fixeffects <- fixef(model_ptm$Model.Details$PROTEIN[[index_prot]])} 
+prot_estimate[prot_estimate$GROUP=="CCCP",]$LogIntensities <- 
+                                                    fixeffects[["(Intercept)"]]
+try(prot_estimate[prot_estimate$GROUP=="Combo",]$LogIntensities <- 
+   fixeffects[["(Intercept)"]] + fixeffects[grepl("Combo", names(fixeffects))])
+try(prot_estimate[prot_estimate$GROUP=="Ctrl",]$LogIntensities <- 
+   fixeffects[["(Intercept)"]] + fixeffects[grepl("Ctrl", names(fixeffects))])
+try(prot_estimate[prot_estimate$GROUP=="USP30_OE",]$LogIntensities <- 
+   fixeffects[["(Intercept)"]] + fixeffects[grepl("USP30_OE", names(fixeffects))])
+
+#PTM normalised
+Protein <- rep(i, length(originalRUN))
+ptm_norm <- tibble(Protein)
+ptm_norm$originalRUN <- originalRUN
+ptm_norm$GROUP <- GROUP
+ptm_norm$FeatureType <- "PTM_normalised"
+ptm_norm$LogIntensities <- ptm_estimate$LogIntensities - prot_estimate$LogIntensities
+
+
+plot_df <- rbindlist(list(protein, ptm_df, ptm_estimate, prot_estimate, ptm_norm), fill = TRUE)
+plot_points <- rbindlist(list(protein, ptm_df), fill = TRUE)
+
+#plot_df[plot_df$FeatureType == 'Model'][['FeatureType']] <- "PTM Summarized"
+#plot_df[plot_df$FeatureType == 'Peptide'][['FeatureType']] <- "PTM Feature"
+
+p1 <- plot_df %>% ggplot() +
+  geom_line(aes(x = originalRUN, y = LogIntensities , group = FeatureType, color = FeatureType), size =2) +
+  geom_point(data = plot_points, aes(x = originalRUN, y = LogIntensities , 
+                                     group = FeatureType, color = FeatureType), size = 5) +
+  geom_vline(data=data.frame(x = c(4.5, 8.5, 12.5)),
+             aes(xintercept=as.numeric(x)), linetype = "dashed") +
+    scale_colour_manual(values = c("PTM" = "palevioletred1", "PTM_estimated" = "deeppink4", 
+                                   "Protein" = "palegreen2", 
+                                 "Protein_estimated" = "seagreen4",
+                                 "PTM_normalised" = "goldenrod2")) +
+  #scale_size_manual(values = c(1, 2)) +
+  labs(title = i, x = "BioReplicate", y = "LogIntensity") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, hjust=1, size = 16),
+        axis.text.y = element_text(size = 16),
+        legend.text=element_text(size=11.5),
+        axis.title.y = element_text(size = 22),
+        axis.title.x = element_text(size = 22),
+        title = element_text(size = 22),
+        strip.text = element_text(size = 16),
+        legend.title =  element_blank(),
+        legend.direction = "horizontal",
+        legend.position = c(0.5, 0.05)) +
+  annotate("text", x = 2.5, y = 30, label = "CCCP", size = 8) +
+  annotate("text", x = 6.5, y = 30, label = "Combo", size = 8) +
+  annotate("text", x = 10.5, y = 30, label = "Ctrl", size = 8) +
+  annotate("text", x = 14.5, y = 30, label = "USP30", size = 8) +
+  ylim(-6, 30)
+
+plots[[i]] <- p1
+}
+plots
+```
+
+```{r}
+model_ptm$ADJUSTED.Model %>% filter(Protein == "O60260_K369", Label == "Combo vs Ctrl")
+```
+
+
+# Msqrob
+
+estimated ptm abundance -> rowData(pe[["ptmRel"]])$msqrobModels$P18124_K029 %>% getCoef()
+protein abundance -> assay(pe[["proteinRobust"]])
+ptm abundance -> this I do not have, is already normalised
+normalised ptm abundance -> assay(pe[["ptmRel"]])
+
+
+```{r, fig.width=8, fig.height=10}
+## Plot ptm's from Combo vs Ctrl
+ptm_list2 <- rowData(pe[["ptmRel"]])$groupCombo %>% filter(adjPval <= 0.05) %>% rownames()
+plots <- c()
+for (i in ptm_list2){
+  print(i)
+  prot <- strsplit(i, "_")[[1]][1]
+
+#Protein abundance
+protein <- assay(pe[["proteinRaw"]])[prot,] %>% as.data.frame() 
+colnames(protein) <- "LogIntensities"
+protein <- protein %>%
+  mutate(Protein = prot,
+         FeatureType = "Protein",
+         GROUP = sapply(strsplit(rownames(protein), "-"), function(x) x[1])) %>%
+         rownames_to_column("originalRUN") %>%
+         arrange(GROUP, originalRUN)
+
+#Peptidoform abundance
+pepforms <- rowData(pe[["peptidoformRaw"]]) %>% as.data.frame() %>% 
+    filter(ptm == i) %>% rownames
+pepform <- assay(pe[["peptidoformRaw"]])[pepforms,] %>% as.data.frame()
+if (length(pepforms)==0) {next}
+if (length(pepforms)>1){
+  pepform <- pepform %>% rownames_to_column("Protein") %>% 
+    pivot_longer(cols = colnames(pepform), names_to = "originalRUN",
+                 values_to = "LogIntensities") 
+  pepform$GROUP <- sapply(strsplit(pepform$originalRUN, "-"), function(x) x[1])
+  pepform <- pepform %>% arrange(GROUP, originalRUN)
+} else {colnames(pepform) <- "LogIntensities"
+        pepform <- pepform %>% rownames_to_column("originalRUN") 
+        pepform <- pepform %>% mutate(GROUP = 
+                    sapply(strsplit(pepform$originalRUN, "-"), function(x) x[1]),
+                    Protein = pepforms[1]) %>%
+                   arrange(GROUP, originalRUN)
+        }
+pepform <- pepform %>%
+  mutate(FeatureType = "Peptidoform")
+#pepform <- select(-c("pepform"))
+pepform$originalRUN <- forcats::fct_inorder(pepform$originalRUN)
+
+#Peptidoform abundance - normalised
+pepforms <- rowData(pe[["pepformRel"]]) %>% as.data.frame() %>% 
+    filter(ptm == i) %>% rownames
+pepform_norm <- assay(pe[["pepformRel"]])[pepforms,] %>% as.data.frame()
+if (length(pepforms)>1){
+  pepform_norm <- pepform_norm %>% rownames_to_column("Protein") %>% 
+    pivot_longer(cols = colnames(pepform_norm), names_to = "originalRUN",
+                 values_to = "LogIntensities") 
+  pepform_norm$GROUP <- sapply(strsplit(pepform_norm$originalRUN, "-"), function(x) x[1])
+  pepform_norm <- pepform_norm %>% arrange(GROUP, originalRUN) %>%
+    mutate(Protein = paste(Protein,"norm"))
+} else {colnames(pepform_norm) <- "LogIntensities"
+        pepform_norm <- pepform_norm %>% rownames_to_column("originalRUN") 
+        pepform_norm <- pepform_norm %>% mutate(GROUP = 
+                    sapply(strsplit(pepform_norm$originalRUN, "-"), function(x) x[1]),
+                    Protein = paste(pepforms[1],"norm")) %>%
+                   arrange(GROUP, originalRUN)
+        }
+pepform_norm <- pepform_norm %>%
+  mutate(FeatureType = "Peptidoform - normalised")
+#pepform <- select(-c("pepform"))
+pepform_norm$originalRUN <- forcats::fct_inorder(pepform_norm$originalRUN)
+
+#Normalised PTM abundance
+ptm_df <- assay(pe[["ptmRel"]])[i,] %>% as.data.frame()
+colnames(ptm_df) <- "LogIntensities"
+ptm_df <- ptm_df %>%
+  mutate(Protein = i,
+         FeatureType = "PTM - normalised",
+         GROUP = sapply(strsplit(rownames(ptm_df), "-"), function(x) x[1])) %>%
+         rownames_to_column("originalRUN") %>%
+         arrange(GROUP, originalRUN)
+
+
+#PTM estimated
+Protein <- paste(rep(i, nrow(ptm_df)), "estimate")
+ptm_estimate <- tibble(Protein)
+ptm_estimate$originalRUN <- ptm_df$originalRUN
+ptm_estimate$GROUP <- ptm_df$GROUP
+ptm_estimate$FeatureType <- "PTM_estimated"
+ptm_estimate$LogIntensities <- NA
+
+fixeffects <- rowData(pe[["ptmRel"]])$msqrobModels[[i]] %>% getCoef
+ptm_estimate[ptm_estimate$GROUP=="Ctrl",]$LogIntensities <- 
+                                                    fixeffects[["(Intercept)"]]
+ptm_estimate[ptm_estimate$GROUP=="Combo",]$LogIntensities <- 
+   fixeffects[["(Intercept)"]] + fixeffects[grepl("Combo", names(fixeffects))][1]
+ptm_estimate[ptm_estimate$GROUP=="CCCP",]$LogIntensities <- 
+   fixeffects[["(Intercept)"]] + fixeffects[grepl("CCCP", names(fixeffects))][1]
+ptm_estimate[ptm_estimate$GROUP=="USP30_OE",]$LogIntensities <- 
+   fixeffects[["(Intercept)"]] + fixeffects[grepl("USP30_OE", names(fixeffects))][1]
+ptm_estimate <- ptm_estimate %>% arrange(GROUP, originalRUN)
+
+plot_df <- rbindlist(list(protein, pepform, pepform_norm, ptm_df, ptm_estimate), fill = TRUE)
+plot_df$originalRUN <- forcats::fct_inorder(plot_df$originalRUN)
+plot_points <- plot_df %>% filter(FeatureType != "PTM_estimated")
+
+#plot_df[plot_df$FeatureType == 'Model'][['FeatureType']] <- "PTM Summarized"
+#plot_df[plot_df$FeatureType == 'Peptide'][['FeatureType']] <- "PTM Feature"
+
+p1 <- plot_df %>% ggplot() +
+  geom_line(aes(x = originalRUN, y = LogIntensities , group = Protein, color = FeatureType), size =2) +
+  geom_point(data = plot_points, aes(x = originalRUN, y = LogIntensities , group = Protein, color = FeatureType), size = 5) +
+  geom_vline(data=data.frame(x = c(4.5, 8.5, 12.5)),
+             aes(xintercept=as.numeric(x)), linetype = "dashed") +
+  scale_colour_manual(values = c("Peptidoform - normalised" = "#C3C3C3", 
+                                 "Protein" = "dodgerblue2", "PTM - normalised" = "seagreen3", 
+                                 "PTM_estimated" = "palevioletred2", "Peptidoform" = "gray36"))  +
+  #scale_size_manual(values = c(1, 2)) +
+  labs(title = i, x = "BioReplicate", y = "LogIntensity") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, hjust=1, size = 16),
+        axis.text.y = element_text(size = 16),
+        legend.text=element_text(size=10),
+        axis.title.y = element_text(size = 22),
+        axis.title.x = element_text(size = 22),
+        title = element_text(size = 22),
+        strip.text = element_text(size = 16),
+        legend.title =  element_blank(),
+        legend.direction = "horizontal",
+        legend.position = c(0.5, 0.05)) +
+  annotate("text", x = 2.5, y = 30, label = "CCCP", size = 8) +
+  annotate("text", x = 6.5, y = 30, label = "Combo", size = 8) +
+  annotate("text", x = 10.5, y = 30, label = "Ctrl", size = 8) +
+  annotate("text", x = 14.5, y = 30, label = "USP30", size = 8) +
+  ylim(-5, 30)
+
+plots[[i]] <- p1
+}
+plots
+```
+
+### CCCP vs Ctrl
+
+```{r, fig.width=8, fig.height=10}
+## Plot ptm's from CCCP vs Ctrl
+ptm_listCCCP <- rowData(pe[["ptmRel"]])$groupCCCP %>% filter(adjPval <= 0.05) %>% rownames()
+plots <- c()
+for (i in ptm_listCCCP){
+  print(i)
+  prot <- strsplit(i, "_")[[1]][1]
+
+#Protein abundance
+protein <- assay(pe[["proteinRaw"]])[prot,] %>% as.data.frame() 
+colnames(protein) <- "LogIntensities"
+protein <- protein %>%
+  mutate(Protein = prot,
+         FeatureType = "Protein",
+         GROUP = sapply(strsplit(rownames(protein), "-"), function(x) x[1])) %>%
+         rownames_to_column("originalRUN") %>%
+         arrange(GROUP, originalRUN)
+
+#Peptidoform abundance
+pepforms <- rowData(pe[["peptidoformRaw"]]) %>% as.data.frame() %>% 
+    filter(ptm == i) %>% rownames
+pepform <- assay(pe[["peptidoformRaw"]])[pepforms,] %>% as.data.frame()
+if (length(pepforms)==0) {next}
+if (length(pepforms)>1){
+  pepform <- pepform %>% rownames_to_column("Protein") %>% 
+    pivot_longer(cols = colnames(pepform), names_to = "originalRUN",
+                 values_to = "LogIntensities") 
+  pepform$GROUP <- sapply(strsplit(pepform$originalRUN, "-"), function(x) x[1])
+  pepform <- pepform %>% arrange(GROUP, originalRUN)
+} else {colnames(pepform) <- "LogIntensities"
+        pepform <- pepform %>% rownames_to_column("originalRUN") 
+        pepform <- pepform %>% mutate(GROUP = 
+                    sapply(strsplit(pepform$originalRUN, "-"), function(x) x[1]),
+                    Protein = pepforms[1]) %>%
+                   arrange(GROUP, originalRUN)
+        }
+pepform <- pepform %>%
+  mutate(FeatureType = "Peptidoform")
+#pepform <- select(-c("pepform"))
+pepform$originalRUN <- forcats::fct_inorder(pepform$originalRUN)
+
+#Peptidoform abundance - normalised
+pepforms <- rowData(pe[["pepformRel"]]) %>% as.data.frame() %>% 
+    filter(ptm == i) %>% rownames
+pepform_norm <- assay(pe[["pepformRel"]])[pepforms,] %>% as.data.frame()
+if (length(pepforms)>1){
+  pepform_norm <- pepform_norm %>% rownames_to_column("Protein") %>% 
+    pivot_longer(cols = colnames(pepform_norm), names_to = "originalRUN",
+                 values_to = "LogIntensities") 
+  pepform_norm$GROUP <- sapply(strsplit(pepform_norm$originalRUN, "-"), function(x) x[1])
+  pepform_norm <- pepform_norm %>% arrange(GROUP, originalRUN) %>%
+    mutate(Protein = paste(Protein,"norm"))
+} else {colnames(pepform_norm) <- "LogIntensities"
+        pepform_norm <- pepform_norm %>% rownames_to_column("originalRUN") 
+        pepform_norm <- pepform_norm %>% mutate(GROUP = 
+                    sapply(strsplit(pepform_norm$originalRUN, "-"), function(x) x[1]),
+                    Protein = paste(pepforms[1],"norm")) %>%
+                   arrange(GROUP, originalRUN)
+        }
+pepform_norm <- pepform_norm %>%
+  mutate(FeatureType = "Peptidoform - normalised")
+#pepform <- select(-c("pepform"))
+pepform_norm$originalRUN <- forcats::fct_inorder(pepform_norm$originalRUN)
+
+#Normalised PTM abundance
+ptm_df <- assay(pe[["ptmRel"]])[i,] %>% as.data.frame()
+colnames(ptm_df) <- "LogIntensities"
+ptm_df <- ptm_df %>%
+  mutate(Protein = i,
+         FeatureType = "PTM - normalised",
+         GROUP = sapply(strsplit(rownames(ptm_df), "-"), function(x) x[1])) %>%
+         rownames_to_column("originalRUN") %>%
+         arrange(GROUP, originalRUN)
+
+
+#PTM estimated
+Protein <- paste(rep(i, nrow(ptm_df)), "estimate")
+ptm_estimate <- tibble(Protein)
+ptm_estimate$originalRUN <- ptm_df$originalRUN
+ptm_estimate$GROUP <- ptm_df$GROUP
+ptm_estimate$FeatureType <- "PTM_estimated"
+ptm_estimate$LogIntensities <- NA
+
+fixeffects <- rowData(pe[["ptmRel"]])$msqrobModels[[i]] %>% getCoef
+ptm_estimate[ptm_estimate$GROUP=="Ctrl",]$LogIntensities <- 
+                                                    fixeffects[["(Intercept)"]]
+ptm_estimate[ptm_estimate$GROUP=="Combo",]$LogIntensities <- 
+   fixeffects[["(Intercept)"]] + fixeffects[grepl("Combo", names(fixeffects))][1]
+ptm_estimate[ptm_estimate$GROUP=="CCCP",]$LogIntensities <- 
+   fixeffects[["(Intercept)"]] + fixeffects[grepl("CCCP", names(fixeffects))][1]
+ptm_estimate[ptm_estimate$GROUP=="USP30_OE",]$LogIntensities <- 
+   fixeffects[["(Intercept)"]] + fixeffects[grepl("USP30_OE", names(fixeffects))][1]
+ptm_estimate <- ptm_estimate %>% arrange(GROUP, originalRUN)
+
+plot_df <- rbindlist(list(protein, pepform, pepform_norm, ptm_df, ptm_estimate), fill = TRUE)
+plot_df$originalRUN <- forcats::fct_inorder(plot_df$originalRUN)
+plot_points <- plot_df %>% filter(FeatureType != "PTM_estimated")
+
+#plot_df[plot_df$FeatureType == 'Model'][['FeatureType']] <- "PTM Summarized"
+#plot_df[plot_df$FeatureType == 'Peptide'][['FeatureType']] <- "PTM Feature"
+
+p1 <- plot_df %>% ggplot() +
+  geom_line(aes(x = originalRUN, y = LogIntensities , group = Protein, color = FeatureType), size =2) +
+  geom_point(data = plot_points, aes(x = originalRUN, y = LogIntensities , group = Protein, color = FeatureType), size = 5) +
+  geom_vline(data=data.frame(x = c(4.5, 8.5, 12.5)),
+             aes(xintercept=as.numeric(x)), linetype = "dashed") +
+  scale_colour_manual(values = c("Peptidoform - normalised" = "#C3C3C3", 
+                                 "Protein" = "dodgerblue2", "PTM - normalised" = "seagreen3", 
+                                 "PTM_estimated" = "palevioletred2", "Peptidoform" = "gray36"))  +
+  #scale_size_manual(values = c(1, 2)) +
+  labs(title = i, x = "BioReplicate", y = "LogIntensity") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, hjust=1, size = 16),
+        axis.text.y = element_text(size = 16),
+        legend.text=element_text(size=10),
+        axis.title.y = element_text(size = 22),
+        axis.title.x = element_text(size = 22),
+        title = element_text(size = 22),
+        strip.text = element_text(size = 16),
+        legend.title =  element_blank(),
+        legend.direction = "horizontal",
+        legend.position = c(0.5, 0.05)) +
+  annotate("text", x = 2.5, y = 30, label = "CCCP", size = 8) +
+  annotate("text", x = 6.5, y = 30, label = "Combo", size = 8) +
+  annotate("text", x = 10.5, y = 30, label = "Ctrl", size = 8) +
+  annotate("text", x = 14.5, y = 30, label = "USP30", size = 8) +
+  ylim(-5, 30)
+
+plots[[i]] <- p1
+}
+plots
+```
+
+
+```{r, fig.width=8, fig.height=10}
+plots <- list()
+for (i in ptm_list2){
+prot_ = str_split(i, "_")[[1]][1]
+site_ = str_split(i, "_")[[1]][2]
+
+pepform_df <- longFormat(pe[,,"pepformRel"], rowvars = c("protein", "ptm"), colvars = c("group")) %>% as.data.frame()
+pepform_df <- pepform_df %>% filter(protein == prot_)
+pepform_df <- pepform_df %>% filter(grepl(site_, ptm, fixed = T))
+pepform_df$FeatureType <- "Peptide"
+pepform_df <- pepform_df %>% arrange(group, rowname)
+
+ptm_df <- longFormat(pe[,,"ptmRel"], rowvars = c("protein", "ptm"), colvars = c("group")) %>% as.data.frame()
+ptm_df <- ptm_df %>% filter(ptm == i)
+ptm_df$FeatureType <- "PTM"
+ptm_df <- ptm_df %>% arrange(group, rowname)
+
+plot_df <- rbindlist(list(pepform_df, ptm_df), fill = TRUE)
+
+plot_df[plot_df$FeatureType == 'PTM'][['FeatureType']] <- "PTM Summarized"
+plot_df[plot_df$FeatureType == 'Peptide'][['FeatureType']] <- "PTM Feature"
+plot_df$primary <- forcats::fct_inorder(plot_df$primary)
+
+p1 <- plot_df %>% ggplot() +
+  geom_line(aes(x = primary, y = value , group = rowname, color = FeatureType), size =2) +
+  geom_point(aes(x = primary, y = value , group = rowname, color = FeatureType), size = 5) +
+  geom_vline(data=data.frame(x = c(4.5, 8.5, 12.5)),
+             aes(xintercept=as.numeric(x)), linetype = "dashed") +
+  scale_colour_manual(values = c("#C3C3C3", "#D55E00")) +
+  #scale_size_manual(values = c(1, 2)) +
+  labs(title = i, x = "BioReplicate", y = "Abundance") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, hjust=1, size = 16),
+        axis.text.y = element_text(size = 16),
+        legend.text=element_text(size=10),
+        axis.title.y = element_text(size = 22),
+        axis.title.x = element_text(size = 22),
+        title = element_text(size = 22),
+        strip.text = element_text(size = 16),
+        legend.title =  element_blank(),
+        legend.direction = "horizontal",
+        legend.position = c(0.5, 0)) +
+  annotate("text", x = 2.5, y = 6.5, label = "Ctrl", size = 6) +
+  annotate("text", x = 6.5, y = 6.5, label = "CCCP", size = 6) +
+  annotate("text", x = 10.5, y = 6.5, label = "Combo", size = 6) +
+  annotate("text", x = 14.5, y = 6.5, label = "USP30", size = 6) +
+  ylim(-6, 6.5)
+
+plots[[i]] <- p1
+}
+plots
+```
+
+### For MSstats significant ptms
+
+Plots of MSstats first 40 significant PTMs
+
+
+```{r, fig.width=8, fig.height=10}
+## Plot fourty ptm's from Combo vs Ctrl
+plots <- c()
+for (i in ptm_list1){
+  print(i)
+  if(!i %in% rownames(assay(pe[["ptmRel"]]))){
+    print(paste(i, "not in msqrob"))
+    next
+    }
+  if(i %in% ptm_list2){print(paste(i, "also significant with msqrob"))}
+  prot <- strsplit(i, "_")[[1]][1]
+
+#Protein abundance
+protein <- assay(pe[["proteinRaw"]])[prot,] %>% as.data.frame() 
+colnames(protein) <- "LogIntensities"
+protein <- protein %>%
+  mutate(Protein = prot,
+         FeatureType = "Protein",
+         GROUP = sapply(strsplit(rownames(protein), "-"), function(x) x[1])) %>%
+         rownames_to_column("originalRUN") %>%
+         arrange(GROUP)
+
+#Peptidoform abundance
+pepforms <- rowData(pe[["pepformRel"]]) %>% as.data.frame() %>% 
+    filter(ptm == i) %>% rownames
+pepform <- assay(pe[["pepformRel"]])[pepforms,] %>% as.data.frame()
+if((nrow(rowData(pe[["peptidoformRaw"]]) %>% as.data.frame() %>% 
+         filter(ptm == i))==0)){next}
+if (length(pepforms)==0){
+  print(paste(i, "not in normalised PTM data"))
+  pepforms <- rowData(pe[["peptidoformRaw"]]) %>% as.data.frame() %>% 
+    filter(ptm == i) %>% rownames
+  pepform <- assay(pe[["peptidoformRaw"]])[pepforms,] %>% as.data.frame()
+  if (length(pepforms)>1){
+  pepform <- pepform %>% rownames_to_column("Protein") %>% 
+    pivot_longer(cols = colnames(pepform), names_to = "originalRUN",
+                 values_to = "LogIntensities") 
+  pepform$GROUP <- sapply(strsplit(pepform$originalRUN, "-"), function(x) x[1])
+  pepform <- pepform %>% arrange(pepform, GROUP)
+} else {colnames(pepform) <- "LogIntensities"
+        pepform <- pepform %>% rownames_to_column("originalRUN") 
+        pepform <- pepform %>% mutate(GROUP = 
+                    sapply(strsplit(pepform$originalRUN, "-"), function(x) x[1]),
+                    Protein = pepforms[1]) %>%
+                   arrange(GROUP)
+        }
+  pepform <- pepform %>%
+  mutate(FeatureType = "pepform - unnormalised")
+  plot_df <- rbindlist(list(protein, pepform), fill = TRUE)
+  p1 <- plot_df %>% ggplot() +
+  geom_line(aes(x = originalRUN, y = LogIntensities , group = Protein, color = FeatureType), size =2) +
+  geom_point(aes(x = originalRUN, y = LogIntensities , group = Protein, color = FeatureType), size = 5) +
+  geom_vline(data=data.frame(x = c(4.5, 8.5, 12.5)),
+             aes(xintercept=as.numeric(x)), linetype = "dashed") +
+  scale_colour_manual(values = c("pepform - unnormalised" = "lightgoldenrod", "Protein" = "palegreen2", 
+                                 "PTM" = "palevioletred2", "PTM_estimated" = "deeppink4")) +
+  #scale_size_manual(values = c(1, 2)) +
+  labs(title = paste(i, "no normalisation possible"), x = "BioReplicate", y = "LogIntensity") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, hjust=1, size = 16),
+        axis.text.y = element_text(size = 16),
+        legend.text=element_text(size=10),
+        axis.title.y = element_text(size = 22),
+        axis.title.x = element_text(size = 22),
+        title = element_text(size = 22),
+        strip.text = element_text(size = 16),
+        legend.title =  element_blank(),
+        legend.direction = "horizontal",
+        legend.position = c(0.5, 0.05)) +
+  annotate("text", x = 2.5, y = 27, label = "CCCP", size = 8) +
+  annotate("text", x = 6.5, y = 27, label = "Combo", size = 8) +
+  annotate("text", x = 10.5, y = 27, label = "Ctrl", size = 8) +
+  annotate("text", x = 14.5, y = 27, label = "USP30", size = 8) +
+  ylim(-7, 27)
+
+plots[[i]] <- p1
+next
+}
+if (length(pepforms)>1){
+  pepform <- pepform %>% rownames_to_column("Protein") %>% 
+    pivot_longer(cols = colnames(pepform), names_to = "originalRUN",
+                 values_to = "LogIntensities") 
+  pepform$GROUP <- sapply(strsplit(pepform$originalRUN, "-"), function(x) x[1])
+  pepform <- pepform %>% arrange(pepform, GROUP) %>%
+    mutate(Protein = paste(Protein, "normalised"))
+} else {colnames(pepform) <- "LogIntensities"
+        pepform <- pepform %>% rownames_to_column("originalRUN") 
+        pepform <- pepform %>% mutate(GROUP = 
+                    sapply(strsplit(pepform$originalRUN, "-"), function(x) x[1]),
+                    Protein = paste(pepforms[1], "normalised")) %>%
+                   arrange(GROUP)
+        }
+pepform <- pepform %>%
+  mutate(FeatureType = "Peptidoform - Normalised")
+
+pepform$originalRUN <- forcats::fct_inorder(pepform$originalRUN)
+
+pepforms_raw <- rowData(pe[["peptidoformRaw"]]) %>% as.data.frame() %>% 
+    filter(ptm == i) %>% rownames
+pepform_raw <- assay(pe[["peptidoformRaw"]])[pepforms_raw,] %>% as.data.frame()
+if (length(pepforms_raw)>1){
+  pepform_raw <- pepform_raw %>% rownames_to_column("Protein") %>% 
+    pivot_longer(cols = colnames(pepform_raw), names_to = "originalRUN",
+                 values_to = "LogIntensities") 
+  pepform_raw$GROUP <- sapply(strsplit(pepform_raw$originalRUN, "-"), function(x) x[1])
+  pepform_raw <- pepform_raw %>% arrange(pepform_raw, GROUP)
+} else {colnames(pepform_raw) <- "LogIntensities"
+        pepform_raw <- pepform_raw %>% rownames_to_column("originalRUN") 
+        pepform_raw <- pepform_raw %>% mutate(GROUP = 
+                    sapply(strsplit(pepform_raw$originalRUN, "-"), function(x) x[1]),
+                    Protein = pepforms_raw[1]) %>%
+                   arrange(GROUP)
+        }
+pepform_raw <- pepform_raw %>%
+  mutate(FeatureType = "Peptidoform")
+
+
+#Normalised PTM abundance
+ptm_df <- assay(pe[["ptmRel"]])[i,] %>% as.data.frame()
+colnames(ptm_df) <- "LogIntensities"
+ptm_df <- ptm_df %>%
+  mutate(Protein = i,
+         FeatureType = "PTM - normalised",
+         GROUP = sapply(strsplit(rownames(ptm_df), "-"), function(x) x[1])) %>%
+         rownames_to_column("originalRUN") %>%
+         arrange(GROUP)
+
+
+#PTM estimated
+Protein <- paste(rep(i, nrow(ptm_df)), "estimate")
+ptm_estimate <- tibble(Protein)
+ptm_estimate$originalRUN <- ptm_df$originalRUN
+ptm_estimate$GROUP <- ptm_df$GROUP
+ptm_estimate$FeatureType <- "PTM_estimated"
+ptm_estimate$LogIntensities <- NA
+
+fixeffects <- rowData(pe[["ptmRel"]])$msqrobModels[[i]] %>% getCoef
+if (! all(is.finite(fixeffects))){print(paste(i, "no refitting possible"))
+  next}
+ptm_estimate[ptm_estimate$GROUP=="Ctrl",]$LogIntensities <- 
+                                                    fixeffects[["(Intercept)"]]
+ptm_estimate[ptm_estimate$GROUP=="Combo",]$LogIntensities <- 
+   fixeffects[["(Intercept)"]] + fixeffects[grepl("Combo", names(fixeffects))][1]
+ptm_estimate[ptm_estimate$GROUP=="CCCP",]$LogIntensities <- 
+   fixeffects[["(Intercept)"]] + fixeffects[grepl("CCCP", names(fixeffects))][1]
+ptm_estimate[ptm_estimate$GROUP=="USP30_OE",]$LogIntensities <- 
+   fixeffects[["(Intercept)"]] + fixeffects[grepl("USP30_OE", names(fixeffects))][1]
+
+
+plot_df <- rbindlist(list(protein, pepform, ptm_df, ptm_estimate, pepform_raw), fill = TRUE)
+plot_df$originalRUN <- as.vector(plot_df$originalRUN)
+plot_df <- plot_df %>% arrange(FeatureType, originalRUN)
+plot_df$originalRUN <- forcats::fct_inorder(plot_df$originalRUN)
+plot_points <- plot_df %>% filter(FeatureType != "PTM_estimated")
+
+#plot_df[plot_df$FeatureType == 'Model'][['FeatureType']] <- "PTM Summarized"
+#plot_df[plot_df$FeatureType == 'Peptide'][['FeatureType']] <- "PTM Feature"
+
+p1 <- plot_df %>% ggplot() +
+  geom_line(aes(x = originalRUN, y = LogIntensities , group = Protein, color = FeatureType), size =2) +
+  geom_point(data = plot_points, aes(x = originalRUN, y = LogIntensities , group = Protein, color = FeatureType), size = 5) +
+  geom_vline(data=data.frame(x = c(4.5, 8.5, 12.5)),
+             aes(xintercept=as.numeric(x)), linetype = "dashed") +
+  scale_colour_manual(values = c("Peptidoform - normalised" = "#C3C3C3", 
+                                 "Protein" = "palegreen2", "PTM - normalised" = "goldenrod2", 
+                                 "PTM_estimated" = "deeppink4", "Peptidoform" = "gray36"))+
+  #scale_size_manual(values = c(1, 2)) +
+  labs(title = i, x = "BioReplicate", y = "LogIntensity") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, hjust=1, size = 16),
+        axis.text.y = element_text(size = 16),
+        legend.text=element_text(size=11.3),
+        axis.title.y = element_text(size = 22),
+        axis.title.x = element_text(size = 22),
+        title = element_text(size = 22),
+        strip.text = element_text(size = 16),
+        legend.title =  element_blank(),
+        legend.direction = "horizontal",
+        legend.position = c(0.5, 0.05)) +
+  annotate("text", x = 2.5, y = 30, label = "CCCP", size = 8) +
+  annotate("text", x = 6.5, y = 30, label = "Combo", size = 8) +
+  annotate("text", x = 10.5, y = 30, label = "Ctrl", size = 8) +
+  annotate("text", x = 14.5, y = 30, label = "USP30", size = 8) +
+  ylim(-5, 30)
+
+plots[[i]] <- p1
+}
+plots
+```
+
+```{r}
+for (i in ptm_list1){
+  print(i)
+  if(!i %in% rownames(assay(pe[["ptmRel"]]))){
+    print(paste(i, "not in msqrob"))
+    next
+    }
+  print(rowData(pe[["ptmRel"]])$groupCombo[i,])
+  }
+```
+
+
+## Msqrob for MSstats summary
+
+estimated ptm abundance -> rowData(peMSstatsSum[["ptmNorm"]])$msqrobModels$P18124_K029 %>% getCoef()
+protein abundance -> summarized_ptm$PROTEIN$ProteinLevelData %>% filter(Protein == i) %>% pull(LogIntensities)
+ptm abundance -> assay(peMSstatsSum[["ptm]]) of summarized_ptm$PTM$ProteinLevelData %>% filter(Protein == i) %>% pull(LogIntensities)
+normalised ptm abundance -> assay(peMSstatsSum[["ptmNorm]])
+
+```{r, fig.width=8, fig.height=10}
+## Plot significant ptm's from Combo vs Ctrl
+ptm_list3 <- rowData(pe[["ptmMSstatsRel"]])$groupCombo %>% filter(adjPval <= 0.05) %>% rownames()
+plots <- c()
+for (i in ptm_list3){
+  prot <- strsplit(i, "_")[[1]][1]
+
+#Protein abundance
+protein <- tibble(originalRUN, GROUP)
+protein$FeatureType <- "Protein"
+protein$Protein <- prot
+tmp <- summarized_ptm$PROTEIN$ProteinLevelData %>% filter(Protein == prot) %>%
+  select(c(LogIntensities, originalRUN))
+missing_runs <- setdiff(originalRUN, tmp$originalRUN)
+tmp2 <- tibble(originalRUN = missing_runs, LogIntensities = NA)
+tmp3 <- rbind(tmp, tmp2) %>% arrange(originalRUN) %>% select(LogIntensities)
+protein <- cbind(protein, tmp3)
+
+#PTM abundance
+ptm_df <- tibble(originalRUN, GROUP)
+ptm_df$FeatureType <- "PTM"
+ptm_df$Protein <- i
+tmp <- summarized_ptm$PTM$ProteinLevelData %>% filter(Protein == i) %>% 
+  select(c(LogIntensities, originalRUN))
+missing_runs <- setdiff(originalRUN, tmp$originalRUN)
+tmp2 <- tibble(originalRUN = missing_runs, LogIntensities = NA)
+tmp3 <- rbind(tmp, tmp2) %>% arrange(originalRUN) %>% select(LogIntensities)
+ptm_df <- cbind(ptm_df, tmp3)
+
+
+#Normalised PTM abundance
+ptm_df_norm <- assay(pe[["ptmMSstatsRel"]])[i,] %>% as.data.frame()
+colnames(ptm_df_norm) <- "LogIntensities"
+ptm_df_norm <- ptm_df_norm %>%
+  mutate(Protein = i,
+         FeatureType = "PTM - normalised",
+         GROUP = sapply(strsplit(rownames(ptm_df_norm), "-"), function(x) x[1])) %>%
+         rownames_to_column("originalRUN") %>%
+         arrange(GROUP)
+
+
+#PTM estimated
+Protein <- rep(i, nrow(ptm_df))
+ptm_estimate <- tibble(Protein)
+ptm_estimate$originalRUN <- ptm_df$originalRUN
+ptm_estimate$GROUP <- ptm_df$GROUP
+ptm_estimate$FeatureType <- "PTM_estimated"
+ptm_estimate$LogIntensities <- NA
+
+fixeffects <- rowData(pe[["ptmMSstatsRel"]])$msqrobModels[[i]] %>% getCoef
+ptm_estimate[ptm_estimate$GROUP=="Ctrl",]$LogIntensities <- 
+                                                    fixeffects[["(Intercept)"]]
+ptm_estimate[ptm_estimate$GROUP=="Combo",]$LogIntensities <- 
+   fixeffects[["(Intercept)"]] + fixeffects[grepl("Combo", names(fixeffects))][1]
+ptm_estimate[ptm_estimate$GROUP=="CCCP",]$LogIntensities <- 
+   fixeffects[["(Intercept)"]] + fixeffects[grepl("CCCP", names(fixeffects))][1]
+ptm_estimate[ptm_estimate$GROUP=="USP30_OE",]$LogIntensities <- 
+   fixeffects[["(Intercept)"]] + fixeffects[grepl("USP30_OE", names(fixeffects))][1]
+
+
+plot_df <- rbindlist(list(protein, ptm_df_norm, ptm_df, ptm_estimate), fill = TRUE)
+plot_df <- plot_df %>% arrange(FeatureType)
+plot_df$originalRUN <- forcats::fct_inorder(plot_df$originalRUN)
+plot_points <- plot_df %>% filter(FeatureType != "PTM_estimated")
+
+#plot_df[plot_df$FeatureType == 'Model'][['FeatureType']] <- "PTM Summarized"
+#plot_df[plot_df$FeatureType == 'Peptide'][['FeatureType']] <- "PTM Feature"
+
+p1 <- plot_df %>% ggplot() +
+  geom_line(aes(x = originalRUN, y = LogIntensities , group = FeatureType, color = FeatureType), size =2) +
+  geom_point(data = plot_points, aes(x = originalRUN, y = LogIntensities , group = FeatureType, color = FeatureType), size = 5) +
+  geom_vline(data=data.frame(x = c(4.5, 8.5, 12.5)),
+             aes(xintercept=as.numeric(x)), linetype = "dashed") +
+    scale_colour_manual(values = c("PTM - normalised" = "lightgoldenrod", "Protein" = "skyblue3", 
+                                 "PTM" = "seagreen3", "PTM_estimated" = "palevioletred2")) +
+  #scale_size_manual(values = c(1, 2)) +
+  labs(title = i, x = "BioReplicate", y = "LogIntensity") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, hjust=1, size = 16),
+        axis.text.y = element_text(size = 16),
+        legend.text=element_text(size=10),
+        axis.title.y = element_text(size = 22),
+        axis.title.x = element_text(size = 22),
+        title = element_text(size = 22),
+        strip.text = element_text(size = 16),
+        legend.title =  element_blank(),
+        legend.direction = "horizontal",
+        legend.position = c(0.5, 0)) +
+  annotate("text", x = 2.5, y = 27, label = "CCCP", size = 8) +
+  annotate("text", x = 6.5, y = 27, label = "Combo", size = 8) +
+  annotate("text", x = 10.5, y = 27, label = "Ctrl", size = 8) +
+  annotate("text", x = 14.5, y = 27, label = "USP30", size = 8) +
+  ylim(-7, 27)
+
+plots[[i]] <- p1
+}
+plots
+```
+
+### For MSstats significant ptms
+
+```{r, fig.width=8, fig.height=10}
+## Plot fourty ptm's from Combo vs Ctrl
+originalRUN <- c("CCCP-B1T1", "CCCP-B1T2", "CCCP-B2T1", "CCCP-B2T2", "Combo-B1T1", 
+                 "Combo-B1T2", "Combo-B2T1", "Combo-B2T2", "Ctrl-B1T1", "Ctrl-B1T2",   
+                 "Ctrl-B2T1", "Ctrl-B2T2", "USP30_OE-B1T1", "USP30_OE-B1T2", 
+                 "USP30_OE-B2T1", "USP30_OE-B2T2")
+GROUP <- sapply(strsplit(originalRUN, "-"), function(x) x[1])
+plots <- c()
+for (i in ptm_list1){
+  if (i %in% ptm_list3){print(paste(i, "also significant in msqrob"))}
+  prot <- strsplit(i, "_")[[1]][1]
+
+#Protein abundance
+protein <- tibble(originalRUN, GROUP)
+protein$FeatureType <- "Protein"
+protein$Protein <- prot
+tmp <- summarized_ptm$PROTEIN$ProteinLevelData %>% filter(Protein == prot) %>%
+  select(c(LogIntensities, originalRUN))
+missing_runs <- setdiff(originalRUN, tmp$originalRUN)
+tmp2 <- tibble(originalRUN = missing_runs, LogIntensities = NA)
+tmp3 <- rbind(tmp, tmp2) %>% arrange(originalRUN) %>% select(LogIntensities)
+protein <- cbind(protein, tmp3)
+
+
+#PTM abundance
+ptm_df <- tibble(originalRUN, GROUP)
+ptm_df$FeatureType <- "PTM"
+ptm_df$Protein <- i
+tmp <- summarized_ptm$PTM$ProteinLevelData %>% filter(Protein == i) %>% 
+  select(c(LogIntensities, originalRUN))
+missing_runs <- setdiff(originalRUN, tmp$originalRUN)
+tmp2 <- tibble(originalRUN = missing_runs, LogIntensities = NA)
+tmp3 <- rbind(tmp, tmp2) %>% arrange(originalRUN) %>% select(LogIntensities)
+ptm_df <- cbind(ptm_df, tmp3)
+
+#Normalised PTM abundance
+if (!i %in% rownames(assay(pe[["ptmMSstatsRel"]]))){
+  print(paste(i, "not in normalised PTM data"))
+  plot_df <- rbindlist(list(protein, ptm_df), fill = TRUE)
+  p1 <- plot_df %>% ggplot() +
+  geom_line(aes(x = originalRUN, y = LogIntensities , group = FeatureType, color = FeatureType), size =2) +
+  geom_point(aes(x = originalRUN, y = LogIntensities , group = FeatureType, color = FeatureType), size = 5) +
+  geom_vline(data=data.frame(x = c(4.5, 8.5, 12.5)),
+             aes(xintercept=as.numeric(x)), linetype = "dashed") +
+  scale_colour_manual(values = c("PTM - normalised" = "lightgoldenrod", "Protein" = "skyblue3", 
+                                 "PTM" = "seagreen3", "PTM_estimated" = "palevioletred2")) +
+  #scale_size_manual(values = c(1, 2)) +
+  labs(title = paste(i, "no normalisation possible"), x = "BioReplicate", y = "LogIntensity") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, hjust=1, size = 16),
+        axis.text.y = element_text(size = 16),
+        legend.text=element_text(size=10),
+        axis.title.y = element_text(size = 22),
+        axis.title.x = element_text(size = 22),
+        title = element_text(size = 22),
+        strip.text = element_text(size = 16),
+        legend.title =  element_blank(),
+        legend.direction = "horizontal",
+        legend.position = c(0.5, 0)) +
+  annotate("text", x = 2.5, y = 27, label = "CCCP", size = 8) +
+  annotate("text", x = 6.5, y = 27, label = "Combo", size = 8) +
+  annotate("text", x = 10.5, y = 27, label = "Ctrl", size = 8) +
+  annotate("text", x = 14.5, y = 27, label = "USP30", size = 8) +
+  ylim(-7, 27)
+
+plots[[i]] <- p1
+next
+}
+ptm_df_norm <- assay(pe[["ptmMSstatsRel"]])[i,] %>% as.data.frame()
+colnames(ptm_df_norm) <- "LogIntensities"
+ptm_df_norm <- ptm_df_norm %>%
+  mutate(Protein = i,
+         FeatureType = "PTM - normalised",
+         GROUP = sapply(strsplit(rownames(ptm_df_norm), "-"), function(x) x[1])) %>%
+         rownames_to_column("originalRUN") %>%
+         arrange(GROUP)
+
+
+#PTM estimated
+Protein <- rep(i, nrow(ptm_df))
+ptm_estimate <- tibble(Protein)
+ptm_estimate$originalRUN <- ptm_df$originalRUN
+ptm_estimate$GROUP <- ptm_df$GROUP
+ptm_estimate$FeatureType <- "PTM_estimated"
+ptm_estimate$LogIntensities <- NA
+
+if(rowData(pe[["ptmMSstatsRel"]])$msqrobModels[[i]] %>% getFitMethod() == "fitError"){
+    print(paste(i, "resulted in a fitError"))
+  plot_df <- rbindlist(list(protein, ptm_df, ptm_df_norm), fill = TRUE)
+  p1 <- plot_df %>% ggplot() +
+  geom_line(aes(x = originalRUN, y = LogIntensities , group = FeatureType, color = FeatureType), size =2) +
+  geom_point(aes(x = originalRUN, y = LogIntensities , group = FeatureType, color = FeatureType), size = 5) +
+  geom_vline(data=data.frame(x = c(4.5, 8.5, 12.5)),
+             aes(xintercept=as.numeric(x)), linetype = "dashed") +
+  scale_colour_manual(values = c("PTM - normalised" = "lightgoldenrod", "Protein" = "skyblue3", 
+                                 "PTM" = "seagreen3", "PTM_estimated" = "palevioletred2")) +
+  #scale_size_manual(values = c(1, 2)) +
+  labs(title = paste(i, "fitError"), x = "BioReplicate", y = "LogIntensity") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, hjust=1, size = 16),
+        axis.text.y = element_text(size = 16),
+        legend.text=element_text(size=10),
+        axis.title.y = element_text(size = 22),
+        axis.title.x = element_text(size = 22),
+        title = element_text(size = 22),
+        strip.text = element_text(size = 16),
+        legend.title =  element_blank(),
+        legend.direction = "horizontal",
+        legend.position = c(0.5, 0)) +
+  annotate("text", x = 2.5, y = 27, label = "CCCP", size = 8) +
+  annotate("text", x = 6.5, y = 27, label = "Combo", size = 8) +
+  annotate("text", x = 10.5, y = 27, label = "Ctrl", size = 8) +
+  annotate("text", x = 14.5, y = 27, label = "USP30", size = 8) +
+  ylim(-7, 27)
+
+plots[[i]] <- p1
+  next
+}
+fixeffects <- rowData(pe[["ptmMSstatsRel"]])$msqrobModels[[i]] %>% getCoef
+try(ptm_estimate[ptm_estimate$GROUP=="Ctrl",]$LogIntensities <- 
+                                                    fixeffects[["(Intercept)"]])
+try(ptm_estimate[ptm_estimate$GROUP=="Combo",]$LogIntensities <- 
+   fixeffects[["(Intercept)"]] + fixeffects[grepl("Combo", names(fixeffects))][1])
+try(ptm_estimate[ptm_estimate$GROUP=="CCCP",]$LogIntensities <- 
+   fixeffects[["(Intercept)"]] + fixeffects[grepl("CCCP", names(fixeffects))][1])
+try(ptm_estimate[ptm_estimate$GROUP=="USP30_OE",]$LogIntensities <- 
+   fixeffects[["(Intercept)"]] + fixeffects[grepl("USP30_OE", names(fixeffects))][1])
+
+
+plot_df <- rbindlist(list(protein, ptm_df_norm, ptm_df, ptm_estimate), fill = TRUE)
+plot_df <- plot_df %>% arrange(FeatureType)
+plot_df$originalRUN <- forcats::fct_inorder(plot_df$originalRUN)
+plot_points <- plot_df %>% filter(FeatureType != "PTM_estimated")
+
+#plot_df[plot_df$FeatureType == 'Model'][['FeatureType']] <- "PTM Summarized"
+#plot_df[plot_df$FeatureType == 'Peptide'][['FeatureType']] <- "PTM Feature"
+
+p1 <- plot_df %>% ggplot() +
+  geom_line(aes(x = originalRUN, y = LogIntensities , group = FeatureType, color = FeatureType), size =2) +
+  geom_point(data = plot_points, aes(x = originalRUN, y = LogIntensities , group = FeatureType, color = FeatureType), size = 5) +
+  geom_vline(data=data.frame(x = c(4.5, 8.5, 12.5)),
+             aes(xintercept=as.numeric(x)), linetype = "dashed") +
+  scale_colour_manual(values = c("PTM - normalised" = "lightgoldenrod", "Protein" = "skyblue3", 
+                                 "PTM" = "seagreen3", "PTM_estimated" = "palevioletred2")) +
+  #scale_size_manual(values = c(1, 2)) +
+  labs(title = i, x = "BioReplicate", y = "LogIntensity") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, hjust=1, size = 16),
+        axis.text.y = element_text(size = 16),
+        legend.text=element_text(size=10),
+        axis.title.y = element_text(size = 22),
+        axis.title.x = element_text(size = 22),
+        title = element_text(size = 22),
+        strip.text = element_text(size = 16),
+        legend.title =  element_blank(),
+        legend.direction = "horizontal",
+        legend.position = c(0.5, 0)) +
+  annotate("text", x = 2.5, y = 30, label = "CCCP", size = 8) +
+  annotate("text", x = 6.5, y = 30, label = "Combo", size = 8) +
+  annotate("text", x = 10.5, y = 30, label = "Ctrl", size = 8) +
+  annotate("text", x = 14.5, y = 30, label = "USP30", size = 8) +
+  ylim(-10, 30)
+
+plots[[i]] <- p1
+}
+plots
+```
+
+```{r}
+for (i in ptm_list1){
+  print(i)
+  print(rowData(pe[["ptmMSstatsRel"]])$groupCombo[i,])
+  }
+```

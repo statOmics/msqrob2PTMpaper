@@ -1,0 +1,683 @@
+---
+title: "simulation 1 peptidoform entirely"
+output: html_document
+date: "2022-12-23"
+---
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "C:/Users/compomics/OneDrive - UGent/Documenten/Doctoraat/msqrobPTM/Datasets MSStats/simulation_data/")
+```
+
+```{r}
+library(tidyverse)
+library(MSstatsPTM)
+library(QFeatures)
+library(msqrob2)
+library(gt)
+library(MSnbase)
+library(data.table)
+```
+
+
+```{r}
+getParameterNames <- function(pe){
+  i = 1
+  while (pe$msqrobModels[[i]] %>% getFitMethod() != "lm"){
+    i =+ 1
+  }
+  return(pe$msqrobModels[[i]] %>% getCoef() %>% names())
+}
+```
+
+
+```{r}
+s <- c(.2,.3)
+reps <- c(2,3,5,10)
+cond <- c(2,3,4)
+param_combos <- expand.grid(s, reps, cond)
+
+calculate_summary_stats <- function(df, protein_col_name, pval_col_name, sd, rep, conditions){
+  
+  fpr <- df %>% filter(get(pval_col_name) < .05 & grepl("NoChange", get(protein_col_name))) %>% 
+    nrow() / nrow(df %>% filter(get(pval_col_name) < .05))
+  sensitivity <- df %>% filter(get(pval_col_name) < .05 & !grepl("NoChange", get(protein_col_name))) %>% 
+    nrow() / nrow(df %>% filter(!grepl("NoChange", get(protein_col_name))))
+  specificity <- df %>% filter(get(pval_col_name) >= .05 & grepl("NoChange", get(protein_col_name))) %>% 
+    nrow() / nrow(df %>% filter(grepl("NoChange", get(protein_col_name))))
+  precision <- df %>% filter(get(pval_col_name) < .05 & !grepl("NoChange", get(protein_col_name))) %>% 
+    nrow() / nrow(df %>% filter(get(pval_col_name) < .05))
+  accuracy <- df %>% filter((get(pval_col_name) < .05 & !grepl("NoChange", get(protein_col_name))) | 
+                              (get(pval_col_name) >= .05 & grepl("NoChange", get(protein_col_name)))) %>% 
+    nrow() / nrow(df)
+  recall <- df %>% filter(get(pval_col_name) < .05 & !grepl("NoChange", get(protein_col_name))) %>% 
+    nrow() / df %>% filter(!grepl("NoChange", get(protein_col_name))) %>% nrow()
+  results_temp <- data.table(fpr = fpr, sensitivity = sensitivity, 
+                             specificity = specificity, precision = precision, 
+                             sd = sd, rep = rep, conditions = conditions,
+                             accuracy = accuracy, recall = recall)
+  return(results_temp)
+}
+```
+
+
+```{r}
+load("simulation1_data.rda")
+```
+
+```{r}
+results <- tibble()
+sign_table  <- tibble()
+results_peptidoform <- tibble()
+sign_table_peptidoform  <- tibble()
+for (i in 1:8){
+  #Get dataset i
+  df <- simulation1_data[[i]]
+  #The summarisiation step is actually not necessary, all intensity values and subsequent results are the same with the following steps, just the names of the peptidoforms are slightly altered
+  #pepform_df <- pivot_wider(simulation1_data[[i]]$PTM, id_cols = c("ProteinName", "PeptideSequence"), names_from = "Run", values_from = "Intensity")
+  MSstatsPTM.summary = dataSummarizationPTM(df, verbose = FALSE, 
+                                          use_log_file = FALSE, append = FALSE)
+  
+  #PTM dataset
+  #Get to wide format for msqrob
+  pepform_df <- pivot_wider( MSstatsPTM.summary$PTM$FeatureLevelData, id_cols = c("PROTEIN", "PEPTIDE"),
+                           names_from = "originalRUN", values_from = "INTENSITY")
+  pepform_df <- pepform_df %>% dplyr::rename(PROTEIN_PTM = PROTEIN)
+  pepform_df$PROTEIN =  paste(sapply(pepform_df$PROTEIN_PTM, function (x) {str_split(x, "_")[[1]][1]}),
+                             sapply(pepform_df$PROTEIN_PTM, function (x) {str_split(x, "_")[[1]][2]}), sep = "_")
+  
+  #Transform into QFeatures object
+  ecols <- grep(colnames(pepform_df), pattern = "R_")
+  pe <- readQFeatures(pepform_df,ecol= ecols,name="peptidoformRaw")
+  rownames(pe[["peptidoformRaw"]]) <- rowData(pe[["peptidoformRaw"]])$PEPTIDE
+  #Fill out coldata
+  ## We need to know which groups correspond to which runs
+  group1runs <- simulation1_data[[i]]$PTM %>% filter(Condition == "G_1") %>% pull(Run) %>% unique()
+  colData(pe)$run <- paste0(rep("run",length(ecols)), sapply(str_split(rownames(colData(pe)), "_"), function(x) x[2]))
+  colData(pe)$group <- ifelse(rownames(colData(pe)) %in% group1runs, "G1", "G2")
+  
+  #Protein dataset
+  #Get to wide format for msqrob
+  protein_df <- pivot_wider(MSstatsPTM.summary$PROTEIN$FeatureLevelData, id_cols = c("PROTEIN", "PEPTIDE"),
+                           names_from = "originalRUN", values_from = "INTENSITY")
+  prot <- readQFeatures(protein_df,ecol= ecols,name="proteinRaw")
+  rownames(prot[["proteinRaw"]]) <- rowData(prot[["proteinRaw"]])$PEPTIDE
+  colData(prot) <- colData(pe)
+  
+  #PreProcessing
+  ##PTM
+  rowData(pe[["peptidoformRaw"]])$nNonZero <- rowSums(assay(pe[["peptidoformRaw"]]) > 0, na.rm = T)
+  pe <- zeroIsNA(pe, i = "peptidoformRaw")
+  pe <- logTransform(pe, base = 2, i = "peptidoformRaw", name = "peptidoform")
+  pe <- pe[rowData(pe[["peptidoformRaw"]])$nNonZero>2,,]
+  colData(pe[["peptidoform"]]) <- colData(pe)
+  
+  ##Protein
+  rowData(prot[["proteinRaw"]])$nNonZero <- rowSums(assay(prot[["proteinRaw"]]) > 0, na.rm = T)
+  prot <- zeroIsNA(prot, i = "proteinRaw")
+  prot <- logTransform(prot, base = 2, i = "proteinRaw", name = "protein")
+  prot <- prot[rowData(prot[["proteinRaw"]])$nNonZero>2,,]
+  colData(prot[["protein"]]) <- colData(prot)
+  
+  #Normalisation for protein abundance
+  ##Robust summarisation to protein level via protein df
+  prot_robustval <- list()
+  
+  rowData(prot[["protein"]])$PROTEIN <- as.vector(rowData(prot[["protein"]])$PROTEIN)
+  prot <- aggregateFeatures(prot,
+   i = "protein",
+   fcol = "PROTEIN",
+   na.rm = TRUE,
+   name = "proteinRobust",
+   fun = MsCoreUtils::robustSummary)
+  
+  #Fill out list with the summarised values
+  for (protein in unique(rowData(prot)[["protein"]]$PROTEIN)){
+  prot_robustval[[protein]] = assay(prot[["proteinRobust"]])[protein,]
+  }
+  
+  ##Scale ptm intensity data to protein intensity data
+  y <- as_tibble(assay(pe[["peptidoform"]]))
+  y_new <- tibble()
+  for (protein in unique(rowData(pe)[["peptidoform"]]$PROTEIN)){
+    pe_sub <- filterFeatures(pe,~PROTEIN==protein)
+    #as_tibble is belangrijk hier, anders worden er random rijen verschoven
+    y_ <- as_tibble(assay(pe_sub[["peptidoform"]]))
+    #center assay based on the corresponding protein value
+    y_scale <- base::scale(y_, center = prot_robustval[[protein]], scale = FALSE)
+    rownames(y_scale) <- rownames(assay(pe_sub))
+    y_new <- rbind(y_new, y_scale, deparse.level = 1)
+  }
+  #Get to same ordering
+  y_new <- y_new[rownames(assay(pe[["peptidoform"]])),]
+
+  #Add the normalised assay as a new assay to the existing pe
+  y_assay <- SummarizedExperiment(assays=as.matrix(y_new), rowData=rowData(pe[["peptidoform"]]), colData=colData(pe[["peptidoform"]]))
+  pe <- addAssay(pe, y_assay, name = "peptidoformNorm")
+  #Add assay link -> peptidoformNorm is linked to peptidoform
+  pe <- addAssayLinkOneToOne(pe, from = "peptidoform", to = "peptidoformNorm")
+  rowData(pe[["peptidoformNorm"]])$peptidoform <- rownames(pe[["peptidoformNorm"]])
+  
+  #DPFU
+  ## Hypothesistest
+  contrasts <- c("groupG2")
+  
+  pe <- msqrob2::msqrob(object = pe, i = "peptidoformNorm", formula = ~group, robust=FALSE, overwrite = T)
+  parameternames <- getParameterNames(rowData(pe[["peptidoformNorm"]]))
+  L <- makeContrast(c("groupG2 = 0"), 
+                    parameterNames = parameternames)
+  pe <- hypothesisTest(object = pe, i = "peptidoformNorm", contrast = L)
+
+  summary_peptidoform <- calculate_summary_stats(rowData(pe[["peptidoformNorm"]])$groupG2 %>% rownames_to_column("Protein"), 
+                                   "Protein", "adjPval", param_combos[i,1], 
+                                   param_combos[i,2], param_combos[i,3])
+  print(paste("dataset", i))
+  results_peptidoform <- rbind(results_peptidoform, summary_peptidoform)
+  
+  sign_table_peptidoform_ <- rowData(pe[["peptidoformNorm"]])$groupG2 %>%
+    mutate(Label = "G_2 vs G_1",
+           sd = param_combos[i,1],
+           reps = param_combos[i,2],
+           conditions = param_combos[i,3])
+  sign_table_peptidoform <- rbind(sign_table_peptidoform, sign_table_peptidoform_)
+  
+  #DPTM
+  ptms <- as.vector(rowData(pe[["peptidoformNorm"]])$PROTEIN_PTM)
+  #Summarise peptidoforms to ptm level
+  #For each ptm do
+  ptm_x_assay <- sapply(unique(ptms), function(x){ 
+    #Get current protein and mod from ptm
+    ptm_sub <- pe[["peptidoformNorm"]][rowData(pe[["peptidoformNorm"]])$PROTEIN_PTM %in% x,]
+    #ptm_sub <- filterFeatures(pe,~grepl(PROTEIN_PTM,pattern=x, fixed=T))[["peptidoformNorm"]]
+    #Get intensity values of those peptidoforms
+    y <- assay(ptm_sub)
+    #And summarise them to 1 row of intensity values: 1 value per sample for that ptm
+    ptm_y <- MsCoreUtils::robustSummary(as.matrix(y))
+    ptm_y
+  })
+  #Then we get the intensity assay on ptm level
+  ptm_x_assay <- t(ptm_x_assay)
+  #Make new QFeatures object
+  ptm <- readQFeatures(as.data.frame(ptm_x_assay),ecol= 1:length(ecols),name="ptm")
+  colData(ptm)<- colData(pe)
+  rownames(ptm[["ptm"]]) <- rownames(ptm_x_assay)
+  rowData(ptm[["ptm"]])$PROTEIN <- sapply(str_split(rownames(ptm[["ptm"]]), pattern="_"),function(x) x[1])
+  rowData(ptm[["ptm"]])$PROTEIN_PTM <- rownames(ptm[["ptm"]])
+  
+  #Hypothesistest
+  contrasts <- c("groupG2")
+
+  ptm <- msqrob2::msqrob(object = ptm, i = "ptm", formula = ~group, robust=FALSE, overwrite=T)
+  parameternames <- getParameterNames(rowData(ptm[["ptm"]]))
+  L <- makeContrast(c("groupG2 = 0"), 
+                    parameterNames = parameternames)
+  ptm <- hypothesisTest(object = ptm, i = "ptm", contrast = L)
+  
+  summary <- calculate_summary_stats(rowData(ptm[["ptm"]])$groupG2 %>% rownames_to_column("Protein"), 
+                                     "Protein", "adjPval", param_combos[i,1], 
+                                     param_combos[i,2], param_combos[i,3])
+  print(paste("dataset", i))
+  results <- rbind(results, summary)
+  
+  sign_table_ <- rowData(ptm[["ptm"]])$groupG2 %>%
+    mutate(Label = "G_2 vs G_1",
+           sd = param_combos[i,1],
+           reps = param_combos[i,2],
+           conditions = param_combos[i,3])
+  sign_table <- rbind(sign_table, sign_table_)
+}
+```
+
+
+```{r}
+save(results_peptidoform, file = "results_simulation1_msqrob_comparison1_peptidoform.rda")
+save(sign_table_peptidoform, file = "signtable_simulation1_msqrob_comparison1_peptidoform.rda")
+```
+
+
+COMPARISON 2
+
+```{r}
+results_separate <- tibble()
+results <- tibble()
+sign_table <- tibble()
+results_separate_peptidoform <- tibble()
+results_peptidoform <- tibble()
+sign_table_peptidoform <- tibble()
+for (i in 9:16){
+  #Get dataset i
+  df <- simulation1_data[[i]]
+  
+  MSstatsPTM.summary = dataSummarizationPTM(df, verbose = FALSE, 
+                                          use_log_file = FALSE, append = FALSE)
+  
+  #PTM dataset
+  #Get to wide format for msqrob
+  pepform_df <- pivot_wider( MSstatsPTM.summary$PTM$FeatureLevelData, id_cols = c("PROTEIN", "PEPTIDE"),
+                           names_from = "originalRUN", values_from = "INTENSITY")
+  pepform_df <- pepform_df %>% dplyr::rename(PROTEIN_PTM = PROTEIN)
+  pepform_df$PROTEIN =  paste(sapply(pepform_df$PROTEIN_PTM, function (x) {str_split(x, "_")[[1]][1]}),
+                             sapply(pepform_df$PROTEIN_PTM, function (x) {str_split(x, "_")[[1]][2]}), sep = "_")
+  
+  #Transform into QFeatures object
+  ecols <- grep(colnames(pepform_df), pattern = "R_")
+  pe <- readQFeatures(pepform_df,ecol= ecols,name="peptidoformRaw")
+  rownames(pe[["peptidoformRaw"]]) <- rowData(pe[["peptidoformRaw"]])$PEPTIDE
+  #Fill out coldata
+  ## We need to know which groups correspond to which runs
+  group1runs <- simulation1_data[[i]]$PTM %>% filter(Condition == "G_1") %>% pull(Run) %>% unique()
+  group2runs <- simulation1_data[[i]]$PTM %>% filter(Condition == "G_2") %>% pull(Run) %>% unique()
+  colData(pe)$run <- paste0(rep("run",length(ecols)), sapply(str_split(rownames(colData(pe)), "_"), function(x) x[2]))
+  colData(pe)$group <- case_when(
+                        rownames(colData(pe)) %in% group1runs ~ "G1", 
+                        rownames(colData(pe)) %in% group2runs ~ "G2",
+                        TRUE ~ "G3")
+  colData(pe)$group <- as.factor(colData(pe)$group)
+  colData(pe)$group <- relevel(colData(pe)$group, ref = "G2")
+  
+  #Protein dataset
+  #Get to wide format for msqrob
+  protein_df <- pivot_wider(MSstatsPTM.summary$PROTEIN$FeatureLevelData, id_cols = c("PROTEIN", "PEPTIDE"),
+                           names_from = "originalRUN", values_from = "INTENSITY")
+  prot <- readQFeatures(protein_df,ecol= ecols,name="proteinRaw")
+  rownames(prot[["proteinRaw"]]) <- rowData(prot[["proteinRaw"]])$PEPTIDE
+  colData(prot) <- colData(pe)
+  
+  #PreProcessing
+  ##PTM
+  rowData(pe[["peptidoformRaw"]])$nNonZero <- rowSums(assay(pe[["peptidoformRaw"]]) > 0, na.rm = T)
+  pe <- zeroIsNA(pe, i = "peptidoformRaw")
+  pe <- logTransform(pe, base = 2, i = "peptidoformRaw", name = "peptidoform")
+  pe <- pe[rowData(pe[["peptidoformRaw"]])$nNonZero>2,,]
+  colData(pe[["peptidoform"]]) <- colData(pe)
+  
+  ##Protein
+  rowData(prot[["proteinRaw"]])$nNonZero <- rowSums(assay(prot[["proteinRaw"]]) > 0, na.rm = T)
+  prot <- zeroIsNA(prot, i = "proteinRaw")
+  prot <- logTransform(prot, base = 2, i = "proteinRaw", name = "protein")
+  prot <- prot[rowData(prot[["proteinRaw"]])$nNonZero>2,,]
+  colData(prot[["protein"]]) <- colData(prot)
+  
+  #Normalisation for protein abundance
+  ##Robust summarisation to protein level via protein df
+  prot_robustval <- list()
+  
+  rowData(prot[["protein"]])$PROTEIN <- as.vector(rowData(prot[["protein"]])$PROTEIN)
+  prot <- aggregateFeatures(prot,
+   i = "protein",
+   fcol = "PROTEIN",
+   na.rm = TRUE,
+   name = "proteinRobust",
+   fun = MsCoreUtils::robustSummary)
+  
+  #Fill out list with the summarised values
+  for (protein in unique(rowData(prot)[["protein"]]$PROTEIN)){
+  prot_robustval[[protein]] = assay(prot[["proteinRobust"]])[protein,]
+  }
+  
+  ##Scale ptm intensity data to protein intensity data
+  y <- as_tibble(assay(pe[["peptidoform"]]))
+  y_new <- tibble()
+  for (protein in unique(rowData(pe)[["peptidoform"]]$PROTEIN)){
+    pe_sub <- filterFeatures(pe,~PROTEIN==protein)
+    #as_tibble is belangrijk hier, anders worden er random rijen verschoven
+    y_ <- as_tibble(assay(pe_sub[["peptidoform"]]))
+    #center assay based on the corresponding protein value
+    y_scale <- base::scale(y_, center = prot_robustval[[protein]], scale = FALSE)
+    rownames(y_scale) <- rownames(assay(pe_sub))
+    y_new <- rbind(y_new, y_scale, deparse.level = 1)
+  }
+  #Get to same ordering
+  y_new <- y_new[rownames(assay(pe[["peptidoform"]])),]
+
+  #Add the normalised assay as a new assay to the existing pe
+  y_assay <- SummarizedExperiment(assays=as.matrix(y_new), rowData=rowData(pe[["peptidoform"]]), colData=colData(pe[["peptidoform"]]))
+  pe <- addAssay(pe, y_assay, name = "peptidoformNorm")
+  #Add assay link -> peptidoformNorm is linked to peptidoform
+  pe <- addAssayLinkOneToOne(pe, from = "peptidoform", to = "peptidoformNorm")
+  rowData(pe[["peptidoformNorm"]])$peptidoform <- rownames(pe[["peptidoformNorm"]])
+
+  #DPFU
+  ## Hypothesistest
+  contrasts <- c("groupG1", "groupG3")
+  
+  pe <- msqrob2::msqrob(object = pe, i = "peptidoformNorm", formula = ~group, robust=FALSE, overwrite = T)
+  parameternames <- getParameterNames(rowData(pe[["peptidoformNorm"]]))
+  L <- makeContrast(c("groupG1 = 0",
+                      "groupG3 = 0"),  
+                    parameterNames = parameternames)
+  pe <- hypothesisTest(object = pe, i = "peptidoformNorm", contrast = L)
+
+  summary1_peptidoform <- calculate_summary_stats(rowData(pe[["peptidoformNorm"]])$groupG1 %>% rownames_to_column("Protein"), 
+                                     "Protein", "adjPval", param_combos[i,1], 
+                                     param_combos[i,2], param_combos[i,3])
+  summary3_peptidoform <- calculate_summary_stats(rowData(pe[["peptidoformNorm"]])$groupG3 %>% rownames_to_column("Protein"), 
+                                     "Protein", "adjPval", param_combos[i,1], 
+                                     param_combos[i,2], param_combos[i,3])
+  summary_together_df_peptidoform <- rbind(rowData(pe[["peptidoformNorm"]])$groupG1 %>% rownames_to_column("Protein"), 
+                               rowData(pe[["peptidoformNorm"]])$groupG3 %>% rownames_to_column("Protein"))
+  summary_together_peptidoform <- calculate_summary_stats(summary_together_df_peptidoform, 
+                                     "Protein", "adjPval", param_combos[i,1], 
+                                     param_combos[i,2], param_combos[i,3]) 
+
+  print(paste("dataset", i))
+  results_separate_peptidoform <- rbind(results_separate_peptidoform, summary1_peptidoform, summary3_peptidoform)
+  results_peptidoform <- rbind(results_peptidoform, summary_together_peptidoform)
+  
+  sign_table_G1_peptidoform <- rowData(pe[["peptidoformNorm"]])$groupG1 %>%
+  mutate(Label = "G_1 vs G_2",
+         sd = param_combos[i,1],
+         reps = param_combos[i,2],
+         conditions = param_combos[i,3])
+    sign_table_G3_peptidoform <- rowData(pe[["peptidoformNorm"]])$groupG3 %>%
+  mutate(Label = "G_3 vs G_2",
+         sd = param_combos[i,1],
+         reps = param_combos[i,2],
+         conditions = param_combos[i,3])
+  sign_table_peptidoform <- rbind(sign_table_peptidoform, sign_table_G1_peptidoform, sign_table_G3_peptidoform) 
+  
+  #DPTM
+  ptms <- as.vector(rowData(pe[["peptidoformNorm"]])$PROTEIN_PTM)
+  #Summarise peptidoforms to ptm level
+  #For each ptm do
+  ptm_x_assay <- sapply(unique(ptms), function(x){ 
+    #Get current protein and mod from ptm
+    ptm_sub <- pe[["peptidoformNorm"]][rowData(pe[["peptidoformNorm"]])$PROTEIN_PTM %in% x,]
+    #ptm_sub <- filterFeatures(pe,~grepl(PROTEIN_PTM,pattern=x, fixed=T))[["peptidoformNorm"]]
+    #Get intensity values of those peptidoforms
+    y <- assay(ptm_sub)
+    #And summarise them to 1 row of intensity values: 1 value per sample for that ptm
+    ptm_y <- MsCoreUtils::robustSummary(as.matrix(y))
+    ptm_y
+  })
+  #Then we get the intensity assay on ptm level
+  ptm_x_assay <- t(ptm_x_assay)
+  #Make new QFeatures object
+  ptm <- readQFeatures(as.data.frame(ptm_x_assay),ecol= 1:length(ecols),name="ptm")
+  colData(ptm)<- colData(pe)
+  rownames(ptm[["ptm"]]) <- rownames(ptm_x_assay)
+  rowData(ptm[["ptm"]])$PROTEIN <- sapply(str_split(rownames(ptm[["ptm"]]), pattern="_"),function(x) x[1])
+  rowData(ptm[["ptm"]])$PROTEIN_PTM <- rownames(ptm[["ptm"]])
+  
+  #Hypothesistest
+  contrasts <- c("groupG1", "groupG3")
+
+  ptm <- msqrob2::msqrob(object = ptm, i = "ptm", formula = ~group, robust=FALSE, overwrite=T)
+  parameternames <- getParameterNames(rowData(ptm[["ptm"]]))
+  L <- makeContrast(c("groupG1 = 0",
+                      "groupG3 = 0"), 
+                    parameterNames = parameternames)
+  ptm <- hypothesisTest(object = ptm, i = "ptm", contrast = L)
+  
+  summary1 <- calculate_summary_stats(rowData(ptm[["ptm"]])$groupG1 %>% rownames_to_column("Protein"), 
+                                     "Protein", "adjPval", param_combos[i,1], 
+                                     param_combos[i,2], param_combos[i,3])
+  summary3 <- calculate_summary_stats(rowData(ptm[["ptm"]])$groupG3 %>% rownames_to_column("Protein"), 
+                                     "Protein", "adjPval", param_combos[i,1], 
+                                     param_combos[i,2], param_combos[i,3])
+  summary_together_df <- rbind(rowData(ptm[["ptm"]])$groupG1 %>% rownames_to_column("Protein"), 
+                               rowData(ptm[["ptm"]])$groupG3 %>% rownames_to_column("Protein"))
+  summary_together <- calculate_summary_stats(summary_together_df, 
+                                     "Protein", "adjPval", param_combos[i,1], 
+                                     param_combos[i,2], param_combos[i,3]) 
+
+  print(paste("dataset", i))
+  results_separate <- rbind(results_separate, summary1, summary3)
+  results <- rbind(results, summary_together)
+  
+  sign_table_G1 <- rowData(ptm[["ptm"]])$groupG1 %>%
+  mutate(Label = "G_1 vs G_2",
+         sd = param_combos[i,1],
+         reps = param_combos[i,2],
+         conditions = param_combos[i,3])
+    sign_table_G3 <- rowData(ptm[["ptm"]])$groupG3 %>%
+  mutate(Label = "G_3 vs G_2",
+         sd = param_combos[i,1],
+         reps = param_combos[i,2],
+         conditions = param_combos[i,3])
+  sign_table <- rbind(sign_table, sign_table_G1, sign_table_G3)
+}
+```
+
+
+```{r}
+save(results_peptidoform, file = "C:/Users/compomics/OneDrive - UGent/Documenten/Doctoraat/msqrobPTM/Datasets MSStats/simulation_data/results_simulation1_msqrob_comparison2_peptidoform.rda")
+save(sign_table_peptidoform, file = "C:/Users/compomics/OneDrive - UGent/Documenten/Doctoraat/msqrobPTM/Datasets MSStats/simulation_data/signtable_simulation1_msqrob_comparison2_peptidoform.rda")
+```
+
+COMPARISON 3
+
+```{r}
+results_separate_peptidoform <- tibble()
+results_peptidoform <- tibble()
+sign_table_peptidoform <- tibble()
+results_separate <- tibble()
+results <- tibble()
+sign_table <- tibble()
+for (i in 17:24){
+  #Get dataset i
+  df <- simulation1_data[[i]]
+  
+  MSstatsPTM.summary = dataSummarizationPTM(df, verbose = FALSE, 
+                                          use_log_file = FALSE, append = FALSE)
+  
+  #PTM dataset
+  #Get to wide format for msqrob
+  pepform_df <- pivot_wider( MSstatsPTM.summary$PTM$FeatureLevelData, id_cols = c("PROTEIN", "PEPTIDE"),
+                           names_from = "originalRUN", values_from = "INTENSITY")
+  pepform_df <- pepform_df %>% dplyr::rename(PROTEIN_PTM = PROTEIN)
+  pepform_df$PROTEIN =  paste(sapply(pepform_df$PROTEIN_PTM, function (x) {str_split(x, "_")[[1]][1]}),
+                             sapply(pepform_df$PROTEIN_PTM, function (x) {str_split(x, "_")[[1]][2]}), sep = "_")
+  
+  #Transform into QFeatures object
+  ecols <- grep(colnames(pepform_df), pattern = "R_")
+  pe <- readQFeatures(pepform_df,ecol= ecols,name="peptidoformRaw")
+  rownames(pe[["peptidoformRaw"]]) <- rowData(pe[["peptidoformRaw"]])$PEPTIDE
+  #Fill out coldata
+  ## We need to know which groups correspond to which runs
+  group1runs <- simulation1_data[[i]]$PTM %>% filter(Condition == "G_1") %>% pull(Run) %>% unique()
+  group2runs <- simulation1_data[[i]]$PTM %>% filter(Condition == "G_2") %>% pull(Run) %>% unique()
+  group3runs <- simulation1_data[[i]]$PTM %>% filter(Condition == "G_3") %>% pull(Run) %>% unique()
+  colData(pe)$run <- paste0(rep("run",length(ecols)), sapply(str_split(rownames(colData(pe)), "_"), function(x) x[2]))
+  colData(pe)$group <- case_when(
+                        rownames(colData(pe)) %in% group1runs ~ "G1", 
+                        rownames(colData(pe)) %in% group2runs ~ "G2",
+                        rownames(colData(pe)) %in% group3runs ~ "G3",
+                        TRUE ~ "G4")
+  colData(pe)$group <- as.factor(colData(pe)$group)
+  colData(pe)$group <- relevel(colData(pe)$group, ref = "G2")
+  
+  #Protein dataset
+  #Get to wide format for msqrob
+  protein_df <- pivot_wider(MSstatsPTM.summary$PROTEIN$FeatureLevelData, id_cols = c("PROTEIN", "PEPTIDE"),
+                           names_from = "originalRUN", values_from = "INTENSITY")
+  prot <- readQFeatures(protein_df,ecol= ecols,name="proteinRaw")
+  rownames(prot[["proteinRaw"]]) <- rowData(prot[["proteinRaw"]])$PEPTIDE
+  colData(prot) <- colData(pe)
+  
+  #PreProcessing
+  ##PTM
+  rowData(pe[["peptidoformRaw"]])$nNonZero <- rowSums(assay(pe[["peptidoformRaw"]]) > 0, na.rm = T)
+  pe <- zeroIsNA(pe, i = "peptidoformRaw")
+  pe <- logTransform(pe, base = 2, i = "peptidoformRaw", name = "peptidoform")
+  pe <- pe[rowData(pe[["peptidoformRaw"]])$nNonZero>2,,]
+  colData(pe[["peptidoform"]]) <- colData(pe)
+  
+  ##Protein
+  rowData(prot[["proteinRaw"]])$nNonZero <- rowSums(assay(prot[["proteinRaw"]]) > 0, na.rm = T)
+  prot <- zeroIsNA(prot, i = "proteinRaw")
+  prot <- logTransform(prot, base = 2, i = "proteinRaw", name = "protein")
+  prot <- prot[rowData(prot[["proteinRaw"]])$nNonZero>2,,]
+  colData(prot[["protein"]]) <- colData(prot)
+  
+  #Normalisation for protein abundance
+  ##Robust summarisation to protein level via protein df
+  prot_robustval <- list()
+  
+  rowData(prot[["protein"]])$PROTEIN <- as.vector(rowData(prot[["protein"]])$PROTEIN)
+  prot <- aggregateFeatures(prot,
+   i = "protein",
+   fcol = "PROTEIN",
+   na.rm = TRUE,
+   name = "proteinRobust",
+   fun = MsCoreUtils::robustSummary)
+  
+  #Fill out list with the summarised values
+  for (protein in unique(rowData(prot)[["protein"]]$PROTEIN)){
+  prot_robustval[[protein]] = assay(prot[["proteinRobust"]])[protein,]
+  }
+  
+  ##Scale ptm intensity data to protein intensity data
+  y <- as_tibble(assay(pe[["peptidoform"]]))
+  y_new <- tibble()
+  for (protein in unique(rowData(pe)[["peptidoform"]]$PROTEIN)){
+    pe_sub <- filterFeatures(pe,~PROTEIN==protein)
+    #as_tibble is belangrijk hier, anders worden er random rijen verschoven
+    y_ <- as_tibble(assay(pe_sub[["peptidoform"]]))
+    #center assay based on the corresponding protein value
+    y_scale <- base::scale(y_, center = prot_robustval[[protein]], scale = FALSE)
+    rownames(y_scale) <- rownames(assay(pe_sub))
+    y_new <- rbind(y_new, y_scale, deparse.level = 1)
+  }
+  #Get to same ordering
+  y_new <- y_new[rownames(assay(pe[["peptidoform"]])),]
+
+  #Add the normalised assay as a new assay to the existing pe
+  y_assay <- SummarizedExperiment(assays=as.matrix(y_new), rowData=rowData(pe[["peptidoform"]]), colData=colData(pe[["peptidoform"]]))
+  pe <- addAssay(pe, y_assay, name = "peptidoformNorm")
+  #Add assay link -> peptidoformNorm is linked to peptidoform
+  pe <- addAssayLinkOneToOne(pe, from = "peptidoform", to = "peptidoformNorm")
+  rowData(pe[["peptidoformNorm"]])$peptidoform <- rownames(pe[["peptidoformNorm"]])
+  
+    #DPFU
+  ## Hypothesistest
+  contrasts <- c("groupG1", "groupG3", "groupG4 - groupG3")
+  
+  pe <- msqrob2::msqrob(object = pe, i = "peptidoformNorm", formula = ~group, robust=FALSE, overwrite = T)
+  parameternames <- getParameterNames(rowData(pe[["peptidoformNorm"]]))
+  L <- makeContrast(c("groupG1 = 0",
+                      "groupG3 = 0",
+                      "groupG4 - groupG3 = 0"),  
+                    parameterNames = parameternames)
+  pe <- hypothesisTest(object = pe, i = "peptidoformNorm", contrast = L)
+
+  summary1_peptidoform <- calculate_summary_stats(rowData(pe[["peptidoformNorm"]])$groupG1 %>% rownames_to_column("Protein"), 
+                                     "Protein", "adjPval", param_combos[i,1], 
+                                     param_combos[i,2], param_combos[i,3])
+  summary3_peptidoform <- calculate_summary_stats(rowData(pe[["peptidoformNorm"]])$groupG3 %>% rownames_to_column("Protein"), 
+                                     "Protein", "adjPval", param_combos[i,1], 
+                                     param_combos[i,2], param_combos[i,3])
+  summary4_peptidoform <- calculate_summary_stats(rowData(pe[["peptidoformNorm"]])[["groupG4 - groupG3"]] %>% rownames_to_column("Protein"), 
+                                     "Protein", "adjPval", param_combos[i,1], 
+                                     param_combos[i,2], param_combos[i,3])
+  summary_together_df_peptidoform <- rbind(rowData(pe[["peptidoformNorm"]])$groupG1 %>% rownames_to_column("Protein"), 
+                               rowData(pe[["peptidoformNorm"]])$groupG3 %>% rownames_to_column("Protein"),
+                               rowData(pe[["peptidoformNorm"]])[["groupG4 - groupG3"]] %>% rownames_to_column("Protein"))
+  summary_together_peptidoform <- calculate_summary_stats(summary_together_df_peptidoform, 
+                                     "Protein", "adjPval", param_combos[i,1], 
+                                     param_combos[i,2], param_combos[i,3]) 
+
+  print(paste("dataset", i))
+  results_separate_peptidoform <- rbind(results_separate_peptidoform, summary1_peptidoform, summary3_peptidoform, summary4_peptidoform)
+  results_peptidoform <- rbind(results_peptidoform, summary_together_peptidoform)
+  
+  sign_table_G1_peptidoform <- rowData(pe[["peptidoformNorm"]])$groupG1 %>%
+  mutate(Label = "G_1 vs G_2",
+         sd = param_combos[i,1],
+         reps = param_combos[i,2],
+         conditions = param_combos[i,3])
+    sign_table_G3_peptidoform <- rowData(pe[["peptidoformNorm"]])$groupG3 %>%
+  mutate(Label = "G_3 vs G_2",
+         sd = param_combos[i,1],
+         reps = param_combos[i,2],
+         conditions = param_combos[i,3])
+  sign_table_G4_peptidoform <- rowData(pe[["peptidoformNorm"]])[["groupG4 - groupG3"]] %>%
+  mutate(Label = "G_4 vs G_3",
+         sd = param_combos[i,1],
+         reps = param_combos[i,2],
+         conditions = param_combos[i,3])
+  sign_table_peptidoform <- rbind(sign_table_peptidoform, sign_table_G1_peptidoform, sign_table_G3_peptidoform, sign_table_G4_peptidoform) 
+  
+  #DPTM
+  ptms <- as.vector(rowData(pe[["peptidoformNorm"]])$PROTEIN_PTM)
+  #Summarise peptidoforms to ptm level
+  #For each ptm do
+  ptm_x_assay <- sapply(unique(ptms), function(x){ 
+    #Get current protein and mod from ptm
+    ptm_sub <- pe[["peptidoformNorm"]][rowData(pe[["peptidoformNorm"]])$PROTEIN_PTM %in% x,]
+    #ptm_sub <- filterFeatures(pe,~grepl(PROTEIN_PTM,pattern=x, fixed=T))[["peptidoformNorm"]]
+    #Get intensity values of those peptidoforms
+    y <- assay(ptm_sub)
+    #And summarise them to 1 row of intensity values: 1 value per sample for that ptm
+    ptm_y <- MsCoreUtils::robustSummary(as.matrix(y))
+    ptm_y
+  })
+  #Then we get the intensity assay on ptm level
+  ptm_x_assay <- t(ptm_x_assay)
+  #Make new QFeatures object
+  ptm <- readQFeatures(as.data.frame(ptm_x_assay),ecol= 1:length(ecols),name="ptm")
+  colData(ptm)<- colData(pe)
+  rownames(ptm[["ptm"]]) <- rownames(ptm_x_assay)
+  rowData(ptm[["ptm"]])$PROTEIN <- sapply(str_split(rownames(ptm[["ptm"]]), pattern="_"),function(x) x[1])
+  rowData(ptm[["ptm"]])$PROTEIN_PTM <- rownames(ptm[["ptm"]])
+  
+  #Hypothesistest
+  contrasts <- c("groupG1", "groupG3", "groupG4 - groupG3")
+
+  ptm <- msqrob2::msqrob(object = ptm, i = "ptm", formula = ~group, robust=FALSE, overwrite=T)
+  parameternames <- getParameterNames(rowData(ptm[["ptm"]]))
+  L <- makeContrast(c("groupG1 = 0",
+                      "groupG3 = 0",
+                      "groupG4 - groupG3 = 0"), 
+                    parameterNames = parameternames)
+  ptm <- hypothesisTest(object = ptm, i = "ptm", contrast = L)
+  
+  summary1 <- calculate_summary_stats(rowData(ptm[["ptm"]])$groupG1 %>% rownames_to_column("Protein"), 
+                                     "Protein", "adjPval", param_combos[i,1], 
+                                     param_combos[i,2], param_combos[i,3])
+  summary3 <- calculate_summary_stats(rowData(ptm[["ptm"]])$groupG3 %>% rownames_to_column("Protein"), 
+                                     "Protein", "adjPval", param_combos[i,1], 
+                                     param_combos[i,2], param_combos[i,3])
+  summary4 <- calculate_summary_stats(rowData(ptm[["ptm"]])[["groupG4 - groupG3"]] %>% rownames_to_column("Protein"), 
+                                     "Protein", "adjPval", param_combos[i,1], 
+                                     param_combos[i,2], param_combos[i,3])
+  summary_together_df <- rbind(rowData(ptm[["ptm"]])$groupG1 %>% rownames_to_column("Protein"), 
+                               rowData(ptm[["ptm"]])$groupG3 %>% rownames_to_column("Protein"),
+                               rowData(ptm[["ptm"]])[["groupG4 - groupG3"]] %>% rownames_to_column("Protein"))
+  summary_together <- calculate_summary_stats(summary_together_df, 
+                                     "Protein", "adjPval", param_combos[i,1], 
+                                     param_combos[i,2], param_combos[i,3]) 
+  
+  sign_table_G1 <- rowData(ptm[["ptm"]])$groupG1 %>%
+  mutate(Label = "G_1 vs G_2",
+         sd = param_combos[i,1],
+         reps = param_combos[i,2],
+         conditions = param_combos[i,3])
+    sign_table_G3 <- rowData(ptm[["ptm"]])$groupG3 %>%
+  mutate(Label = "G_3 vs G_2",
+         sd = param_combos[i,1],
+         reps = param_combos[i,2],
+         conditions = param_combos[i,3])
+  sign_table_G4 <- rowData(ptm[["ptm"]])[["groupG4 - groupG3"]] %>%
+  mutate(Label = "G_4 vs G_3",
+         sd = param_combos[i,1],
+         reps = param_combos[i,2],
+         conditions = param_combos[i,3])
+  sign_table <- rbind(sign_table, sign_table_G1, sign_table_G3, sign_table_G4) 
+
+  results_separate <- rbind(results_separate, summary1, summary3, summary4)
+  results <- rbind(results, summary_together)
+}
+```
+
+
+```{r}
+save(results_peptidoform, file = "results_simulation1_msqrob_comparison3_peptidoform.rda")
+write.csv2(results_peptidoform, file = "results_simulation1_msqrob_comparison3_peptidoform.csv")
+```
+
+```{r}
+save(sign_table_peptidoform, file = "signtable_simulation1_msqrob_comparison3_peptidoform.rda")
+```
+
+

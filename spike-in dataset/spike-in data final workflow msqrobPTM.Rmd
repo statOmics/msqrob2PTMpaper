@@ -1,0 +1,699 @@
+---
+title: "spike-in data msqrobPTM"
+output:
+  html_document:
+    code_download: yes
+    theme: cosmo
+    toc: yes
+    toc_depth: 4
+    toc_float:
+      collapsed: yes
+    highlight: tango
+    number_sections: yes
+    df_print: paged
+  pdf_document:
+    toc: yes
+    toc_depth: '4'
+---
+
+
+
+```{r}
+library(tidyverse)
+library(MSstatsPTM)
+library(QFeatures)
+library(msqrob2)
+library(gt)
+library(seqinr)
+library(data.table)
+```
+
+```{r, setup, include=F}
+knitr::opts_knit$set(root.dir="C:/Users/Nina/OneDrive - UGent/Documenten/Doctoraat/msqrobPTM paper/spike-in dataset/")
+```
+
+
+```{r}
+load("MSstatsPTM_Summarized.rda")
+```
+
+
+``` {r}
+#In here PTM level and Protein level data
+head(summary_df)
+```
+
+
+-> Get to wide format for QFeatures object
+
+```{r}
+#PTM dataset -> only the human proteins were used as global proteome (said in paper)
+# -> check what is in here
+human_fasta <- "homo_sapiens_all_20160725.fasta"
+ecoli_fasta <- "Swissprot-Ecoli-K12.fasta"
+human <- names(read.fasta(file = human_fasta, seqtype = "AA", as.string = T))
+human <- sapply(strsplit(human, "|", fixed = T), function(x) x[[2]])
+ecoli <- names(read.fasta(file = ecoli_fasta, seqtype = "AA", as.string = T))
+ecoli <- sapply(strsplit(ecoli, "|", fixed = T), function(x) x[[2]])
+
+
+#Get to wide format for msqrob
+pepform_df <- pivot_wider(summary_df$PTM$ProteinLevelData, id_cols = c("Protein"),
+                         names_from = "originalRUN", values_from = "LogIntensities")
+pepform_df <- pepform_df %>% dplyr::rename(PROTEIN_PTM = Protein)
+pepform_df$PROTEIN =  paste(sapply(pepform_df$PROTEIN_PTM, function (x) {str_split(x, "_")[[1]][1]}))
+human_proteins <- pepform_df$PROTEIN %in% human
+ecoli_proteins <- pepform_df$PROTEIN %in% ecoli
+```
+
+both in ptm level data as in protein level data there were already only human proteins
+
+```{r}
+head(pepform_df, 10)
+```
+
+
+Transform into QFeatures object
+
+```{r}
+#order dataframe by protein, for the normalisation step
+pepform_df = pepform_df[order(pepform_df$PROTEIN),]
+ecols <- grep("mix",names(pepform_df))
+pepform_df <- pepform_df[,c(names(pepform_df)[-ecols],sort(names(pepform_df)[ecols]))]
+ecols <- grep("mix", colnames(pepform_df))
+pe <- readQFeatures(pepform_df,ecol= ecols,name="ptmRaw", fnames = "PROTEIN_PTM")
+```
+
+
+```{r}
+colData(pe)$mix <- sapply(str_split(rownames(colData(pe)), "-"), function(x) x[1])
+colData(pe)$mix <- as.factor(colData(pe)$mix)
+colData(pe)$biorep <- rownames(colData(pe))
+colData(pe)
+```
+
+```{r}
+#Get to wide format for msqrob
+protein_df <- pivot_wider(summary_df$PROTEIN$ProteinLevelData, id_cols = c("Protein"),
+                         names_from = "originalRUN", values_from = "LogIntensities")
+ecols <- grep("mix", colnames(protein_df))
+protein_df <- protein_df[,c(names(protein_df)[-ecols],sort(names(protein_df)[ecols]))]
+ecols <- grep("mix", colnames(protein_df))
+prot <- readQFeatures(protein_df,ecol= ecols,name="protein",fnames="Protein")
+colData(prot) <- colData(pe)
+```
+
+
+
+
+# Preprocessing
+
+```{r}
+##PTM
+print(nrow(pe[["ptmRaw"]]))
+rowData(pe[["ptmRaw"]])$nNonZero <- rowSums(assay(pe[["ptmRaw"]]) > 0, na.rm = T)
+pe <- zeroIsNA(pe, i = "ptmRaw")
+pe <- pe[rowData(pe[["ptmRaw"]])$nNonZero>2,,]
+print(nrow(pe[["ptmRaw"]]))
+```
+
+```{r}
+##Protein 
+prot <- zeroIsNA(prot, i = "protein")
+rowData(prot[["protein"]])$nNonZero <- rowSums(assay(prot[["protein"]]) > 0, na.rm = T)
+nrow(prot[["protein"]])
+#prot <- logTransform(prot, base = 2, i = "proteinRaw", name = "protein")
+prot <- prot[rowData(prot[["protein"]])$nNonZero>2,,]
+nrow(prot[["protein"]])
+colData(prot[["protein"]]) <- colData(prot)
+```
+
+
+
+# Normalize PTM log intensity by protein log intensity
+
+```{r}
+peL <- pe[,,1]
+#Only take ptms that have a parent protein
+ptmWithProteinEvalue <- rowData(peL[["ptmRaw"]])$PROTEIN %in% rownames(prot[["protein"]])
+peL <- peL[ptmWithProteinEvalue,,]
+peL <- addAssay(peL,peL[["ptmRaw"]],"ptmRel")
+#normalisation for protein abundance step
+assay(peL[["ptmRel"]]) <- assay(peL[["ptmRel"]]) - assay(prot[["protein"]])[rowData(peL[["ptmRel"]])$PROTEIN,colnames(assay(peL[["ptmRel"]]))]
+boxplot(assay(peL[["ptmRel"]]))
+```
+
+# Median normalization 
+
+```{r}
+peL <- normalize(peL, i = "ptmRel", method = "center.median", name = "ptmRelNorm")
+boxplot(assay(peL[["ptmRelNorm"]]))
+```
+
+```{r}
+peL
+```
+
+ptmRaw = raw ptm intensities (no normalisations), but only for ptms that have a parent protein
+ptmRel = relative abundance, normalised for protein
+ptmRelNorm = ptmRel + median centring
+
+
+# Analysis
+
+```{r}
+peL <- msqrob(peL,i="ptmRel",formula=~mix,robust=FALSE)
+#ptmRelNorm is nog met center median normalisatie
+peL <- msqrob(peL,i="ptmRelNorm",formula=~mix,robust=FALSE)
+
+L <- makeContrast(c("mixmix2 = 0",
+                    "mixmix3 = 0",
+                    "mixmix4 = 0",
+                    "mixmix4 - mixmix2 = 0",
+                    "mixmix3 - mixmix2 = 0",
+                    "mixmix4 - mixmix3 = 0"), 
+                  parameterNames = rowData(peL[["ptmRelNorm"]])$msqrobModels[[2]] %>%
+                  getCoef %>%
+                  names)
+
+peL <- hypothesisTest(object = peL, i = "ptmRelNorm", contrast = L, overwrite = T)
+peL <- hypothesisTest(object = peL, i = "ptmRel", contrast = L, overwrite = T)
+rowData(peL[["ptmRelNorm"]])$heavy <- grepl("heavy", rownames(peL[["ptmRelNorm"]]))
+rowData(peL[["ptmRel"]])$heavy <- grepl("heavy", rownames(peL[["ptmRel"]]))
+```
+
+# Evaluation
+
+```{r}
+tprFdp <- function(pval, tp, adjPval) {
+    ord <- order(pval)
+    return(data.frame(
+        pval = pval[ord],
+        adjPval = adjPval[ord],
+        tpr = cumsum(tp[ord]) / sum(tp),
+        fpr = cumsum(!tp[ord]) / sum(!tp),
+        fdp = cumsum(!tp[ord]) / 1:length(tp)
+    ))
+}
+
+tprFdpPtmRel <- lapply(colnames(L),function(contrast) 
+  tprFdp(
+    rowData(peL[["ptmRel"]])[[contrast]]$pval,
+    rowData(peL[["ptmRel"]])$heavy,
+    rowData(peL[["ptmRel"]])[[contrast]]$adjPval
+    )
+  )
+
+tprFdpPtmRelNorm <- lapply(colnames(L),function(contrast) 
+  tprFdp(
+    rowData(peL[["ptmRelNorm"]])[[contrast]]$pval,
+    rowData(peL[["ptmRelNorm"]])$heavy,
+    rowData(peL[["ptmRelNorm"]])[[contrast]]$adjPval
+    )
+  )
+```
+
+# MSstats Emulation 
+
+```{r}
+peL <- normalize(peL, i = "ptmRaw", method = "center.median", name = "ptmNorm")
+prot <- normalize(prot, i = "protein", method = "center.median", name = "proteinNorm")
+```
+
+```{r}
+peL
+```
+
+ptmRaw = raw ptm intensities (no normalisations), but only for ptms that have a parent protein
+ptmNorm = median centered ptm intensities, not corrected for protein abundance
+ptmRel = relative abundance, normalised for protein
+ptmRelNorm = ptmRel + median centering
+
+```{r, fig.width=9}
+boxplot(assay(peL[["ptmRaw"]]))
+boxplot(assay(peL[["ptmNorm"]]))
+boxplot(assay(prot[["protein"]]))
+boxplot(assay(prot[["proteinNorm"]]))
+```
+
+```{r}
+peL <- msqrob(peL,i="ptmNorm",formula=~mix,robust=FALSE,overwrite=TRUE)
+peL <- hypothesisTest(object = peL, i = "ptmNorm", contrast = L, overwrite = T)
+peL <- msqrob(peL,i="ptmRaw",formula=~mix,robust=FALSE,overwrite=TRUE)
+peL <- hypothesisTest(object = peL, i = "ptmRaw", contrast = L, overwrite = T)
+
+prot <- msqrob(prot,i="proteinNorm",formula=~mix,robust=FALSE,overwrite=TRUE)
+prot <- hypothesisTest(object = prot, i = "proteinNorm", contrast = L, overwrite = T)
+prot <- msqrob(prot,i="protein",formula=~mix,robust=FALSE,overwrite=TRUE)
+prot <- hypothesisTest(object = prot, i = "protein", contrast = L, overwrite = T)
+```
+
+Msstats emulation with EB
+
+```{r}
+msstatsResEB <- lapply(colnames(L),function(contrast) 
+{
+  resPtm <- rowData(peL[["ptmRaw"]])[[contrast]]
+  resProt <- (rowData(prot[["protein"]])[[contrast]])[rowData(peL[["ptmRaw"]])$PROTEIN,]
+  resPtm$logFC <- resPtm$logFC-resProt$logFC
+  s2 <- resPtm$se^2
+  s2prot <- resProt$se^2
+  resPtm$se <- sqrt(s2+s2prot)
+  numer <- (s2+s2prot)^2
+  denom <- (s2^2/resPtm$df+s2prot^2/resProt$df)
+  resPtm$df <- numer/denom
+  resPtm$t <- resPtm$logFC/resPtm$se
+  resPtm$pval <- 2*pt(abs(resPtm$t),resPtm$df,lower.tail=FALSE)
+  resPtm$adjPval <- p.adjust(resPtm$pval,method="fdr")
+  return(resPtm)
+})
+names(msstatsResEB) <- colnames(L)
+```
+
+msqrob does EB by default while MsStatsPTM does not use empirical Bayes. 
+Code to recalculate se en df 
+
+```{r}
+msstatsRes <- lapply(colnames(L),function(contrast) 
+{
+  resPtm <- rowData(peL[["ptmRaw"]])[[contrast]]
+  resPtm$df <- sapply(rowData(peL[["ptmRaw"]])$msqrobModels,getDF)
+  resPtm$se <- resPtm$se *sapply(rowData(peL[["ptmRaw"]])$msqrobModels,getSigma)/sapply(rowData(peL[["ptmRaw"]])$msqrobModels,getSigmaPosterior)
+  resProt <- rowData(prot[["protein"]])[[contrast]]
+  resProt$se <- resProt$se *sapply(rowData(prot[["protein"]])$msqrobModels,getSigma)/sapply(rowData(prot[["protein"]])$msqrobModels,getSigmaPosterior)
+  resProt$df <- sapply(rowData(prot[["protein"]])$msqrobModels,getDF)
+  resProt <- resProt[rowData(peL[["ptmRaw"]])$PROTEIN,]
+  #resProt <- (rowData(prot[["protein"]])[[contrast]])[rowData(peL[["ptmRaw"]])$PROTEIN,]
+  resPtm$logFC <- resPtm$logFC-resProt$logFC
+  s2 <- resPtm$se^2
+  s2prot <- resProt$se^2
+  resPtm$se <- sqrt(s2+s2prot)
+  numer <- (s2+s2prot)^2
+  denom <- (s2^2/resPtm$df+s2prot^2/resProt$df)
+  resPtm$df <- numer/denom
+  resPtm$t <- resPtm$logFC/resPtm$se
+  resPtm$pval <- 2*pt(abs(resPtm$t),resPtm$df,lower.tail=FALSE)
+  resPtm$adjPval <- p.adjust(resPtm$pval,method="fdr")
+  return(resPtm)
+})
+names(msstatsRes) <- colnames(L)
+```
+
+
+
+```{r}
+load(file="MSstatsPTM_Summarized.rda")#raw_input_data
+model_ptm <- groupComparisonPTM(summary_df, data.type = "LabelFree")
+
+resMsStatsNative <- model_ptm$ADJUSTED.Model
+resMsStatsNative$Label <- as.factor(resMsStatsNative$Label)
+levels(resMsStatsNative$Label) <- c("mixmix2","mixmix3 - mixmix2","mixmix4 - mixmix2","mixmix3","mixmix4 - mixmix3","mixmix4")
+resMsStatsNative <- lapply(colnames(L), function(contrast) resMsStatsNative %>% filter(Label==contrast))
+names(resMsStatsNative) <- colnames(L)
+```
+
+```{r}
+rowData(peL[["ptmRaw"]])$heavy <- grepl("heavy", rownames(peL[["ptmRaw"]]))
+rowData(peL[["ptmNorm"]])$heavy <- grepl("heavy", rownames(peL[["ptmNorm"]]))
+
+tprFdpPtmRaw <- lapply(colnames(L),function(contrast) 
+  tprFdp(
+    rowData(peL[["ptmRaw"]])[[contrast]]$pval,
+    rowData(peL[["ptmRaw"]])$heavy,
+    rowData(peL[["ptmRaw"]])[[contrast]]$adjPval
+    )
+  )
+
+
+tprFdpPtmNorm <- lapply(colnames(L),function(contrast) 
+  tprFdp(
+    rowData(peL[["ptmNorm"]])[[contrast]]$pval,
+    rowData(peL[["ptmNorm"]])$heavy,
+    rowData(peL[["ptmNorm"]])[[contrast]]$adjPval
+    )
+)
+
+tprFdpPtmNormNoEB <- lapply(colnames(L),function(contrast) 
+{
+  datah <- rowData(peL[["ptmNorm"]])[[contrast]]
+  datah$se<- datah$se*sapply(rowData(peL[["ptmNorm"]])$msqrobModels,getSigma)/sapply(rowData(peL[["ptmNorm"]])$msqrobModels,getSigma)
+  datah$df<-sapply(rowData(peL[["ptmNorm"]])$msqrobModels,getDF)
+  datah$t <- datah$logFC/datah$se
+  datah$pval <- pt(abs(datah$t),datah$df,lower.tail = FALSE)*2
+  datah$adjPval<-p.adjust(datah$pval,method="fdr")
+  return(tprFdp(
+    datah$pval,
+    rowData(peL[["ptmNorm"]])$heavy,
+    datah$adjPval
+    )
+    )
+})
+
+tprFdpPtmRawMsStats <- lapply(colnames(L),function(contrast) 
+  {
+  tprFdp(
+    msstatsRes[[contrast]]$pval,
+    grepl("heavy", rownames(msstatsRes[[contrast]])),
+    msstatsRes[[contrast]]$adjPval
+    )
+  })
+
+tprFdpPtmRawMsStatsEB <- lapply(colnames(L),function(contrast) 
+  {
+  tprFdp(
+    msstatsResEB[[contrast]]$pval,
+    grepl("heavy", rownames(msstatsResEB[[contrast]])),
+    msstatsResEB[[contrast]]$adjPval
+    )
+  })
+
+tprFdpMsstatsNative <- lapply(colnames(L),function(contrast) 
+  {
+  tprFdp(
+    resMsStatsNative[[contrast]]$pvalue,
+    grepl("heavy", resMsStatsNative[[contrast]]$Protein),
+    resMsStatsNative[[contrast]]$adj.pvalue
+    )
+  })
+
+```
+
+### ROC curves
+
+```{r}
+names(tprFdpPtmRaw) <- colnames(L)
+names(tprFdpPtmNorm) <- colnames(L)
+names(tprFdpPtmNormNoEB) <- colnames(L)
+names(tprFdpPtmRel) <- colnames(L)
+names(tprFdpPtmRelNorm) <- colnames(L)
+names(tprFdpPtmRawMsStats) <- colnames(L)
+names(tprFdpPtmRawMsStatsEB) <- colnames(L)
+names(tprFdpMsstatsNative) <- colnames(L)
+
+rocPlots <- lapply(colnames(L),
+function(contrast)
+{
+  hlp <- rbind(
+    cbind(tprFdpPtmRaw[[contrast]], method = "DPA"),
+    cbind(tprFdpPtmNorm[[contrast]], method = "DPA-norm"),
+    cbind(tprFdpPtmRel[[contrast]], method = "msqrob"),
+    cbind(tprFdpPtmRelNorm[[contrast]], method = "msqrob-norm"),
+    cbind(tprFdpPtmRawMsStats[[contrast]], method = "msstatsEmul"),
+    cbind(tprFdpPtmRawMsStatsEB[[contrast]], method = "msstatsEmulEB"),
+    cbind(tprFdpMsstatsNative[[contrast]], method = "msstatsNative")
+    )
+hlp %>%
+    ggplot(aes(x = fpr, y = tpr, color = method)) +
+    geom_path() +
+    ggtitle(contrast)
+})
+rocPlots
+```
+
+```{r, fig.height = 11, fig.width=15}
+names(tprFdpPtmRaw) <- colnames(L)
+names(tprFdpPtmNorm) <- colnames(L)
+names(tprFdpPtmNormNoEB) <- colnames(L)
+names(tprFdpPtmRel) <- colnames(L)
+names(tprFdpPtmRelNorm) <- colnames(L)
+names(tprFdpPtmRawMsStats) <- colnames(L)
+names(tprFdpPtmRawMsStatsEB) <- colnames(L)
+names(tprFdpMsstatsNative) <- colnames(L)
+
+hlp <- sapply(colnames(L),
+function(contrast)
+{
+  tmp <- rbind(
+    cbind(tprFdpPtmRaw[[contrast]], method = "DPA-NonNorm", contrast = contrast),
+    cbind(tprFdpPtmNorm[[contrast]], method = "DPA", contrast = contrast),
+    #cbind(tprFdpPtmRel[[contrast]], method = "msqrob2PTM-NonNorm", contrast = contrast),
+    cbind(tprFdpPtmRelNorm[[contrast]], method = "msqrob2PTM", contrast = contrast),
+    #cbind(tprFdpPtmRawMsStats[[contrast]], method = "msstatsEmul", contrast = contrast),
+    #cbind(tprFdpPtmRawMsStatsEB[[contrast]], method = "msstatsEmulEB", contrast = contrast),
+    cbind(tprFdpMsstatsNative[[contrast]], method = "MSstatsPTM", contrast = contrast)
+    )
+  tmp
+}, simplify = F)
+hlp <- do.call("rbind", hlp)
+hlp %>%
+    ggplot(aes(x = fpr, y = tpr, color = method)) +
+    geom_path(size= 1) +
+    scale_colour_manual(values = c("#7CAE00", "#D62728", "#C77CFF",
+                                   "#FAA43A"
+                                   )) +
+    facet_wrap(~contrast) +
+    theme(legend.position = "bottom",
+          axis.text=element_text(size=11),
+          axis.title=element_text(size=15),
+          strip.text.x = element_text(size = 18),
+          strip.text.y = element_text(size = 18),
+          legend.title = element_text(size=14), 
+          legend.text = element_text(size=14)) 
+```
+
+tpr-fdp curves
+
+```{r, fig.height = 9, fig.width=13}
+hlp %>%
+    ggplot(aes(x = fdp, y = tpr, color = method)) +
+    geom_path(size= 1) +
+    scale_colour_manual(values = c("#D62728", "#7CAE00", 
+                                   "#C77CFF", "#FAA43A", "#4D4D4D",
+                                   "#00BFC4", "#F0E442")) +
+    facet_wrap(~contrast) +
+    theme(legend.position = "bottom",
+          axis.text=element_text(size=11),
+          axis.title=element_text(size=15),
+          strip.text.x = element_text(size = 18),
+          strip.text.y = element_text(size = 18),
+          legend.title = element_text(size=14), 
+          legend.text = element_text(size=14))
+```
+
+
+# Boxplots of fold changes
+
+
+```{r, echo = FALSE, fig.width = 8}
+summary_together_df <- rbind(rowData(peL[["ptmRelNorm"]])$mixmix2 %>% rownames_to_column("Protein") %>% mutate(Contrast = "mix2 vs mix1"), 
+                               rowData(peL[["ptmRelNorm"]])$mixmix3 %>% rownames_to_column("Protein") %>% mutate(Contrast = "mix3 vs mix1"),
+                               rowData(peL[["ptmRelNorm"]])$mixmix4 %>% rownames_to_column("Protein") %>% mutate(Contrast = "mix4 vs mix1"),
+                               rowData(peL[["ptmRelNorm"]])[["mixmix4 - mixmix2"]] %>% rownames_to_column("Protein") %>% mutate(Contrast = "mix4 vs mix2"),
+                               rowData(peL[["ptmRelNorm"]])[["mixmix3 - mixmix2"]] %>% rownames_to_column("Protein") %>% mutate(Contrast = "mix3 vs mix2"),
+                               rowData(peL[["ptmRelNorm"]])[["mixmix4 - mixmix3"]] %>% rownames_to_column("Protein") %>% mutate(Contrast = "mix4 vs mix3"))
+summary_together_df <- summary_together_df %>% mutate(labeling = ifelse(grepl("heavy", summary_together_df$Protein), "heavy", "light"))
+```
+
+#### Log Fold Change - Spike-in Peptides
+
+Lastly, the plot below looks at the distribution spike-in peptides log fold changes. The expected log Fold Change is indicated by the red `X` marks.
+
+```{r, echo = FALSE, fig.width = 10, fig.height = 5}
+summary_together_df <- summary_together_df %>% 
+                        mutate(trueLog2FC = case_when(
+                          Contrast == "mix2 vs mix1" ~ -1,
+                          Contrast == "mix3 vs mix1" ~ 1,
+                          Contrast == "mix4 vs mix1" ~ 0,
+                          Contrast == "mix3 vs mix2" ~ 2,
+                          Contrast == "mix4 vs mix2" ~ 1,
+                          Contrast == "mix4 vs mix3" ~ -1
+                        ))
+
+summary_together_df %>% filter(labeling == "heavy") %>% ggplot() + geom_boxplot(aes(x = Contrast, y = logFC), fill = "lightsteelblue4") + 
+  geom_point(aes(y = trueLog2FC, x = Contrast), color = "red", shape = 4, size = 3) + 
+  labs(title = "MsqrobPTM Fold Change of Spike-in Peptides", x = "Comparison") + theme(axis.text.x = element_text(angle = 30, vjust = .5))
+ 
+```
+
+```{r}
+summary_together_df %>% mutate(LogFClight = 0) %>% filter(labeling == "light") %>% 
+  ggplot() + geom_boxplot(aes(x = Contrast, y = logFC), fill = "lightsteelblue4") + 
+  geom_point(aes(y = LogFClight, x = Contrast), color = "red", shape = 4, size = 3) + 
+  labs(title = "MsqrobPTM Fold Change of background Peptides", x = "Comparison") + theme(axis.text.x = element_text(angle = 30, vjust = .5))
+```
+
+
+```{r, echo = FALSE, fig.width = 10, fig.height = 7}
+load("MSstatsPTM_Model.rda")
+
+msstats <- model_df$ADJUSTED.Model %>% 
+  select(-c("GlobalProtein", "protadj")) %>% mutate(model = "MSstatsPTM") 
+msstats$group = paste(msstats$Label, msstats$model)
+colnames(msstats) <- c("Protein", "Contrast", "logFC", "se", "t", "df", 
+                             "pval", "adjPval", "labeling", "trueLog2FC", 
+                             "contrast_truth", "model", "group")
+
+summary_together_df$model = "MsqrobPTM"
+summary_together_df$group = paste(summary_together_df$Contrast, summary_together_df$model)
+
+summary_together_df <- summary_together_df %>% mutate(
+  contrast_truth = as.factor(case_when(Contrast == 'mix2 vs mix1' ~ "LogFC: -1 (mix2-mix1)",
+                             Contrast == 'mix3 vs mix1' ~ "LogFC: 1 (mix3-mix1)",
+                             Contrast == 'mix4 vs mix1' ~ "LogFC: 0 (mix4-mix1)",
+                             Contrast == 'mix3 vs mix2' ~ "LogFC: 2 (mix3-mix2)",
+                             Contrast == 'mix4 vs mix2' ~ "LogFC: 1 (mix4-mix2)",
+                             Contrast == 'mix4 vs mix3' ~ "LogFC: -1 (mix4-mix3)")
+))
+
+summary_together_df$labeling <- as.factor(summary_together_df$labeling)
+
+rbind(msstats, summary_together_df) %>% filter(labeling == "heavy") %>% ggplot() + geom_boxplot(aes(x = group, y = logFC, fill = model)) + 
+  scale_fill_manual(values = c("MsqrobPTM" = "deeppink2", "MSstatsPTM" = "dodgerblue2")) +
+  geom_point(aes(y = trueLog2FC, x = group), color = "white", shape = 4, size = 4) + 
+  labs(title = "MsqrobPTM and MSstatsPTM Fold Change of Spike-in Peptides", x = "Comparison")  + 
+  theme(axis.text.x = element_text(angle = 90, size = 11.5),
+        axis.text.y = element_text(size = 10),
+        legend.text=element_text(size=12),
+        axis.title.y = element_text(size = 14),
+        axis.title.x = element_text(size = 14)) 
+ 
+```
+
+```{r, echo = FALSE, fig.width = 10, fig.height = 7}
+load("MSstatsPTM_Model.rda")
+
+
+summary_together_df$model = "MsqrobPTM"
+summary_together_df$group = paste(summary_together_df$Contrast, summary_together_df$model)
+
+rbind(msstats, summary_together_df) %>% filter(labeling == "light") %>% ggplot() + geom_boxplot(aes(x = group, y = logFC, fill = model)) + 
+  scale_fill_manual(values = c("MsqrobPTM" = "deeppink2", "MSstatsPTM" = "dodgerblue2")) +
+  geom_point(aes(y = 0, x = group), color = "navajowhite", shape = 4, size = 4) + 
+  labs(title = "MsqrobPTM and MSstatsPTM Fold Change of background Peptides", x = "Comparison")  + 
+  theme(axis.text.x = element_text(angle = 90, size = 11.5),
+        axis.text.y = element_text(size = 10),
+        legend.text=element_text(size=12),
+        axis.title.y = element_text(size = 14),
+        axis.title.x = element_text(size = 14)) 
+ 
+```
+
+#### Calculating background peptide percentages
+
+```{r, echo=FALSE}
+
+light_pep <- summary_together_df %>% filter(labeling == "light")
+
+light_sign <- summary_together_df %>% filter(labeling == "light" & adjPval < .05)
+
+nrow(light_sign) / nrow(light_pep)
+
+```
+
+# Volcano plots
+
+```{r, fig.width=15, fig.height=7}
+# Volcano plot
+summary_together_df %>% arrange(desc(labeling)) %>% 
+  filter(abs(logFC) < Inf) %>% # & Label %in% c("mix1-mix3", "mix1-mix4", "mix2-mix3", "mix2-mix4")
+  ggplot(aes(logFC, -log10(adjPval))) + 
+  geom_point(aes(color = labeling, alpha = labeling), size = 2.5) + 
+  scale_color_manual(values = c("light" = "grey77", "heavy" = "hotpink")) + 
+  scale_alpha_manual(values = c("light" = 0.2, "heavy" = 1)) + 
+  geom_vline(xintercept = 0) + 
+  geom_vline(aes(xintercept = trueLog2FC),color = "springgreen4", linetype= "dashed") +
+  facet_grid(~contrast_truth) + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(size = 16), 
+       axis.text.y = element_text(size = 16), 
+       legend.text=element_text(size=16),
+       axis.title.y = element_text(size = 18, vjust=2),
+       axis.title.x = element_text(size = 18),
+       title = element_text(size = 20),
+       strip.text = element_text(size = 15),
+       legend.title =  element_blank(),
+       legend.position = "bottom",
+       legend.box.margin=margin(-10,-10,-10,-10)) + 
+  scale_y_continuous(limits = c(0,3.5)) +
+  scale_x_continuous(limits = c(-10,10)) +
+  guides(colour = guide_legend(override.aes = list(size=5))) +
+  labs(title = "Proposed Method VolcanoPlot")
+```
+
+```{r}
+msstats = msstats %>% mutate(
+  contrast_truth = case_when(
+    contrast_truth == "mix2 vs mix1 (-1)" ~ "LogFC: -1 (mix2-mix1)",
+    contrast_truth == "mix3 vs mix1 (1)" ~ "LogFC: 1 (mix3-mix1)",
+    contrast_truth == "mix4 vs mix1 (0)" ~ "LogFC: 0 (mix4-mix1)",
+    contrast_truth == "mix3 vs mix2 (2)" ~ "LogFC: 2 (mix3-mix2)",
+    contrast_truth == "mix4 vs mix2 (1)" ~ "LogFC: 1 (mix4-mix2)",
+    contrast_truth == "mix4 vs mix3 (-1)" ~ "LogFC: -1 (mix4-mix3)"
+  )
+)
+```
+
+
+```{r, fig.width=15, fig.height=9}
+# Volcano plot
+rbind(msstats, summary_together_df)  %>% arrange((labeling)) %>% 
+  filter(abs(logFC) < Inf) %>% # & Label %in% c("mix1-mix3", "mix1-mix4", "mix2-mix3", "mix2-mix4")
+  ggplot(aes(logFC, -log10(adjPval))) + 
+  geom_point(aes(color = labeling, alpha = labeling), size = 2.5) + 
+  scale_color_manual(values = c("light" = "grey77", "heavy" = "hotpink")) + 
+  scale_alpha_manual(values = c("light" = 0.2, "heavy" = 1)) + 
+  geom_vline(xintercept = 0) + 
+  geom_vline(aes(xintercept = trueLog2FC),color = "springgreen4", linetype= "dashed", size = 1.2) +
+  facet_grid(model~contrast_truth) + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(size = 16), 
+       axis.text.y = element_text(size = 16), 
+       legend.text=element_text(size=16),
+       axis.title.y = element_text(size = 18, vjust=2),
+       axis.title.x = element_text(size = 18),
+       title = element_text(size = 20),
+       strip.text = element_text(size = 15),
+       legend.title =  element_blank(),
+       legend.position = "bottom",
+       legend.box.margin=margin(-10,-10,-10,-10)) + 
+  scale_y_continuous(limits = c(0,3.5)) +
+  scale_x_continuous(limits = c(-10,10)) +
+  guides(colour = guide_legend(override.aes = list(size=5))) +
+  labs(title = "VolcanoPlot light and heavy peptides")
+```
+
+# Lowlevel checks 
+
+```{r}
+rocPlotsMsStats <- lapply(colnames(L),
+function(contrast)
+{
+  dataEmul <- na.exclude(msstatsRes[[contrast]])
+  dataEmulEB <- na.exclude(msstatsResEB[[contrast]])
+  dataNative <- resMsStatsNative[[contrast]]%>% filter(Protein %in% rownames(dataEmul))
+  hlp <- rbind(
+    cbind(
+      tprFdp(
+        dataEmul$pval,
+        grepl("heavy", rownames(dataEmul)),
+        dataEmul$adjPval
+        ),
+      method ="msstatEmul"
+    ),
+        cbind(
+      tprFdp(
+        dataEmulEB$pval,
+        grepl("heavy", rownames(dataEmulEB)),
+        dataEmulEB$adjPval
+        ),
+      method ="msstatEmulEB"
+    ),
+        cbind(
+      tprFdp(
+        dataNative$pvalue,
+        grepl("heavy", dataNative %>% pull(Protein)),
+        dataNative$adj.pvalue
+        ),
+      method ="msstatNative"
+    )
+    )
+
+  hlp %>%
+    ggplot(aes(x = fpr, y = tpr, color = method,size=method)) +
+    geom_line() +
+    scale_size_manual(values = c("msstatEmul" = 2, "msstatEmulEB" = 1, "msstatNative" = 1)) +
+    ggtitle(contrast)
+})
+
+rocPlotsMsStats
+```

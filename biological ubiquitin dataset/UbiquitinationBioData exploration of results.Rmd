@@ -1,0 +1,956 @@
+---
+title: "UbiquitinationBioData detailed exploration of results"
+output:
+  html_document:
+    code_download: yes
+    theme: cosmo
+    toc: yes
+    toc_depth: 4
+    toc_float:
+      collapsed: yes
+    highlight: tango
+    number_sections: yes
+    df_print: paged
+  pdf_document:
+    toc: yes
+    toc_depth: '4'
+---
+
+```{r}
+library(tidyverse)
+library(MSstatsPTM)
+library(QFeatures)
+library(msqrob2)
+library(gt)
+library(data.table)
+library(lme4)
+```
+
+```{r, setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "C:/Users/Nina/OneDrive - UGent/Documenten/Doctoraat/msqrobPTM paper/biological ubiquitin dataset/")
+```
+
+
+```{r}
+#raw data
+load("usp30_input_data.rda")
+#pe msqrob
+load("pe_ubiquitin_msqrob.rda")
+#msstats data
+load("MSstatsSummarizedData.RData")
+load("MSstatsModel.rda")
+```
+
+# Different model were used in the MSstats results
+
+```{r}
+model_ptm$Model.Details$PTM %>% head(4)
+```
+
+We see three different models that occur:
+1. lm model ABUNDANCE ~ GROUP
+2. lmer model ABUNDANCE ~ GROUP + (1 | SUBJECT)
+3. lmer model ABUNDANCE ~ GROUP + (1 | SUBJECT) + (1 | GROUP:SUBJECT)
+
+We saw that for the second model, the associated metadata was incorrect
+See an example below:
+
+# Example of wrong encoding
+
+```{r}
+model_ptm$Model.Details$PTM[[209]]
+```
+
+
+```{r}
+model_ptm$Model.Details$PTM[[209]] %>% lme4::getData()
+```
+
+When we look at the SUBJECT column, we see that they are coded as BCH1 and BCH2
+-> It is assumed here that the subjects are independent, but CCCP-BCH1 is not the same as Combo-BCH1.
+The model used in this case ABUNDANCE ~ GROUP + (1 | SUBJECT) however, assumes that it is, leading to underestimated standard errors.
+-> Either an extra term is necessary, like in the full model: (1 | GROUP:SUBJECT) or the SUBJECT column must be changed to CCCP-BCH1, Combo-BCH1 and so on.
+
+```{r}
+tmp <- sapply(model_ptm$Model.Details$PROTEIN, function(x) try(nrow(lme4::getData(x)), silent = T))
+index = which(tmp == "15")[1]
+model_ptm$Model.Details$PROTEIN[[index]] 
+```
+
+This model is used as soon as the number of observations is not 16 anymore, so as soon as there is one missing data point.
+How many of the ptms were modelled in this way? See below
+
+```{r}
+tmp <- sapply(model_ptm$Model.Details$PROTEIN, function(x) {
+  if (class(x) == "lm"){
+    nrow(x$model)
+  }
+  else {"null"}
+})
+table(tmp)
+```
+
+```{r}
+model_ptm$Model.Details$PTM[[3]]
+```
+```{r}
+model_ptm$Model.Details$PTM[[3]] %>% getData() 
+```
+
+
+When a linear model is used, there is only information about 1 biorepeat in all conditions
+When there is info about only 1 biorepeat in up to three conditions, a mixed model is still used.
+
+# Per significant ptm, which model was used?
+
+## PTM level
+
+2 different comparisons as example: Combo vs Ctrl and CCCP vs Ctrl
+We check for each significant ptm in these comparisons how many were modelled with the linear model (lm),
+how many with the full mixed model (full) and how many with the wrong mixed model (wrong)
+
+```{r}
+sign_ptms = model_ptm$ADJUSTED.Model %>% 
+  filter(adj.pvalue < 0.05, 
+         Label == "Combo vs Ctrl", 
+         Adjusted == T) %>% pull(Protein) %>% 
+  as.character
+Combo = model_ptm$PTM.Model %>% filter(Label=="Combo vs Ctrl")
+lm_ <- 0
+wrong <- 0
+full <- 0
+for(x in sign_ptms) {
+  j = which(Combo$Protein==x)
+  c = class(model_ptm$Model.Details$PTM[[j]])
+  if (c=="lm"){lm_ = lm_ + 1} else if (c=="lmerMod"){
+    if(model_ptm$Model.Details$PTM[[j]] %>% getData() %>% nrow == 16){
+      full = full + 1
+    } else {wrong = wrong + 1}
+  }
+}
+lm_
+wrong
+full
+```
+
+```{r}
+sign_ptms = model_ptm$ADJUSTED.Model %>% 
+  filter(adj.pvalue < 0.05, 
+         Label == "CCCP vs Ctrl", 
+         Adjusted == T) %>% pull(Protein) %>% 
+  as.character
+CCCP = model_ptm$PTM.Model %>% filter(Label=="CCCP vs Ctrl")
+lm_ <- 0
+wrong <- 0
+full <- 0
+for(x in sign_ptms) {
+  j = which(CCCP$Protein==x)
+  c = class(model_ptm$Model.Details$PTM[[j]])
+  if (c=="lm"){lm_ = lm_ + 1} else if (c=="lmerMod"){
+    if(model_ptm$Model.Details$PTM[[j]] %>% getData() %>% nrow == 16){
+      full = full + 1
+    } else {wrong = wrong + 1}
+  }
+}
+lm_
+wrong
+full
+```
+```{r}
+for (contrast in model_ptm$ADJUSTED.Model$Label %>% unique){
+  sign_ptms = model_ptm$ADJUSTED.Model %>% 
+  filter(adj.pvalue < 0.05, 
+         Label == contrast, 
+         Adjusted == T) %>% pull(Protein) %>% 
+  as.character
+CCCP = model_ptm$PTM.Model %>% filter(Label==contrast)
+lm_ <- 0
+wrong <- 0
+full <- 0
+for(x in sign_ptms) {
+  j = which(CCCP$Protein==x)
+  c = class(model_ptm$Model.Details$PTM[[j]])
+  if (c=="lm"){lm_ = lm_ + 1} else if (c=="lmerMod"){
+    if(model_ptm$Model.Details$PTM[[j]] %>% getData() %>% nrow == 16){
+      full = full + 1
+    } else {wrong = wrong + 1}
+  }
+}
+print(wrong/(lm_+wrong+full))
+}
+```
+
+```{r}
+for (contrast in model_ptm$ADJUSTED.Model$Label %>% unique){
+  sign_ptms = model_ptm$ADJUSTED.Model %>% 
+  filter(adj.pvalue < 0.05, 
+         Label == contrast, 
+         Adjusted == T) %>% pull(Protein) %>% 
+  as.character
+CCCP = model_ptm$PTM.Model %>% filter(Label==contrast)
+lm_ <- 0
+wrong <- 0
+full <- 0
+for(x in sign_ptms) {
+  j = which(CCCP$Protein==x)
+  c = class(model_ptm$Model.Details$PTM[[j]])
+  if (c=="lm"){lm_ = lm_ + 1} else if (c=="lmerMod"){
+    if(model_ptm$Model.Details$PTM[[j]] %>% getData() %>% nrow == 16){
+      full = full + 1
+    } else {wrong = wrong + 1}
+  }
+}
+print(lm_/(lm_+wrong+full))
+}
+```
+
+We see that in all cases, about 15-27% of significantly found ptms is modelled with this insufficient mixed model (depending on the comparison)
+We can also observe that in all cases about 44-75% of ptms is modelled with a linear model. In these cases, the mixed model could not be fit and MSstats resorts to a linear model whereas msqrob will not fit any model at all.
+
+## PTM and corresponding Protein level
+
+When we also look at the corresponding protein for that ptm, was the same model used or not and if so, which model?
+
+```{r}
+sign_ptms = model_ptm$ADJUSTED.Model %>% 
+  filter(adj.pvalue < 0.05, 
+         Label == "CCCP vs Ctrl", 
+         Adjusted == T) %>% pull(Protein) %>% 
+  as.character
+CCCP = model_ptm$PTM.Model %>% filter(Label=="CCCP vs Ctrl")
+CCCPp = model_ptm$PROTEIN.Model %>% filter(Label=="CCCP vs Ctrl")
+lm_ <- 0
+lm_wrong <- 0
+lm_full <- 0
+wrong <- 0
+full <- 0
+full_wrong = 0
+for(x in sign_ptms) {
+  prot = strsplit(x, "_|-")[[1]][1]
+  j = which(CCCP$Protein==x)
+  k = which(CCCPp$Protein==prot)
+  c = class(model_ptm$Model.Details$PTM[[j]])
+  cp = class(model_ptm$Model.Details$PROTEIN[[k]])
+  if (c == cp & c == "lm"){lm_ = lm_ + 1} 
+  else if (c=="lm" | cp == "lm"){
+    if(try(model_ptm$Model.Details$PTM[[j]] %>% getData() %>% nrow, silent = T) == 16 |
+          try(model_ptm$Model.Details$PROTEIN[[k]] %>% getData() %>% nrow, silent = T) == 16){
+      lm_full = lm_full + 1
+    } else {lm_wrong = lm_wrong + 1}
+  }
+  else if (c != "lm" & cp != "lm"){
+    if(model_ptm$Model.Details$PTM[[j]] %>% getData() %>% nrow == 16 &
+          model_ptm$Model.Details$PROTEIN[[k]] %>% getData() %>% nrow == 16){
+      full = full + 1
+    }
+    else if (model_ptm$Model.Details$PTM[[j]] %>% getData() %>% nrow == 16 |
+          model_ptm$Model.Details$PROTEIN[[k]] %>% getData() %>% nrow == 16){
+      full_wrong = full_wrong + 1
+    }
+    else {wrong = wrong + 1}
+  }
+}
+lm_ 
+lm_wrong
+lm_full 
+wrong 
+full 
+full_wrong 
+```
+
+```{r}
+for (contrast in model_ptm$ADJUSTED.Model$Label %>% unique){
+sign_ptms = model_ptm$ADJUSTED.Model %>% 
+  filter(adj.pvalue < 0.05, 
+         Label == contrast, 
+         Adjusted == T) %>% pull(Protein) %>% 
+  as.character
+CCCP = model_ptm$PTM.Model %>% filter(Label==contrast)
+CCCPp = model_ptm$PROTEIN.Model %>% filter(Label==contrast)
+lm_ <- 0
+lm_wrong <- 0
+lm_full <- 0
+wrong <- 0
+full <- 0
+full_wrong = 0
+for(x in sign_ptms) {
+  prot = strsplit(x, "_|-")[[1]][1]
+  j = which(CCCP$Protein==x)
+  k = which(CCCPp$Protein==prot)
+  c = class(model_ptm$Model.Details$PTM[[j]])
+  cp = class(model_ptm$Model.Details$PROTEIN[[k]])
+  if (c == cp & c == "lm"){lm_ = lm_ + 1} 
+  else if (c=="lm" | cp == "lm"){
+    if(try(model_ptm$Model.Details$PTM[[j]] %>% getData() %>% nrow, silent = T) == 16 |
+          try(model_ptm$Model.Details$PROTEIN[[k]] %>% getData() %>% nrow, silent = T) == 16){
+      lm_full = lm_full + 1
+    } else {lm_wrong = lm_wrong + 1}
+  }
+  else if (c != "lm" & cp != "lm"){
+    if(model_ptm$Model.Details$PTM[[j]] %>% getData() %>% nrow == 16 &
+          model_ptm$Model.Details$PROTEIN[[k]] %>% getData() %>% nrow == 16){
+      full = full + 1
+    }
+    else if (model_ptm$Model.Details$PTM[[j]] %>% getData() %>% nrow == 16 |
+          model_ptm$Model.Details$PROTEIN[[k]] %>% getData() %>% nrow == 16){
+      full_wrong = full_wrong + 1
+    }
+    else {wrong = wrong + 1}
+  }
+}
+print(lm_+full+wrong)
+print(lm_wrong+lm_full+full_wrong)
+print("------")
+}
+```
+
+lm_ = both lm, lm_wrong = 1 lm, 1 wrong, full_wrong = 1 full mixed, 1 wrong and so on
+
+We see it is possible that different models are used for the ptm and corresponding parent protein.
+The number of times a different model is used is always greater than the number of times the same model is used
+Hence, in most cases, the ptm model and corresponding protein model are different for the significant ptms
+
+## Adjustment with incorrect or different models
+
+What happens to the adjusted model in these cases?
+
+### Different models for ptms and corresponding protein 
+
+eg ptm = O60361_K070 -> lm (ptm) mixed with lmer (protein) (ABUNDANCE ~ GROUP + (1 | SUBJECT) + (1 | GROUP:SUBJECT))
+
+```{r}
+x = "O60361_K070"
+prot = strsplit(x, "_|-")[[1]][1]
+CCCP = model_ptm$PTM.Model %>% filter(Label=="CCCP vs Ctrl")
+CCCPp = model_ptm$PROTEIN.Model %>% filter(Label=="CCCP vs Ctrl")
+index_ptm = which(CCCP$Protein==x)
+index_prot = which(CCCPp$Protein==prot)
+model_ptm$Model.Details$PTM[[index_ptm]] 
+model_ptm$Model.Details$PROTEIN[[index_prot]]
+```
+
+
+```{r}
+model_ptm$PTM.Model %>% filter(Protein == x, Label == "CCCP vs Ctrl")
+model_ptm$PROTEIN.Model %>% filter(Protein == prot, Label == "CCCP vs Ctrl")
+model_ptm$ADJUSTED.Model %>% filter(Protein == x, Label == "CCCP vs Ctrl")
+```
+
+```{r}
+#This code comes from MSstatsPTM:::.adjustProteinLevel
+resPtm <- model_ptm$PTM.Model %>% filter(Protein == x, Label == "CCCP vs Ctrl")
+resProt <- model_ptm$PROTEIN.Model %>% filter(Protein == prot, Label == "CCCP vs Ctrl")
+resPtm$log2FC <- resPtm$log2FC-resProt$log2FC
+s2 <- resPtm$SE^2
+s2prot <- resProt$SE^2
+resPtm$SE <- sqrt(s2+s2prot)
+numer <- (s2+s2prot)^2
+#hier gaat het dan mis waarschijnlijk, bij de df
+denom <- (s2^2/resPtm$DF+s2prot^2/resProt$DF)
+resPtm$DF <- numer/denom
+resPtm$Tvalue <- resPtm$log2FC/resPtm$SE
+resPtm$pvalue <- 2*pt(abs(resPtm$Tvalue),resPtm$DF,lower.tail=FALSE)
+resPtm$adj.pvalue <- NA
+resPtm
+```
+
+-> Even though the models are different for ptm and protein, we see that the adjusted model is calculated in the exact same way as usual
+(resPtm = model_ptm$ADJUSTED.Model %>% filter(Protein == x, Label == "CCCP vs Ctrl"))
+
+### Incorrect models for ptms and corresponding protein
+
+P18206_K0216 is an example of a ptm modelled by ABUNDANCE ~ GROUP + (1 | SUBJECT), as well as its parent protein
+
+```{r}
+x = "P18206_K0216"
+prot = strsplit(x, "_|-")[[1]][1]
+CCCP = model_ptm$PTM.Model %>% filter(Label=="CCCP vs Ctrl")
+CCCPp = model_ptm$PROTEIN.Model %>% filter(Label=="CCCP vs Ctrl")
+index_ptm = which(CCCP$Protein==x)
+index_prot = which(CCCPp$Protein==prot)
+model_ptm$Model.Details$PTM[[index_ptm]] 
+model_ptm$Model.Details$PROTEIN[[index_prot]]
+```
+
+
+```{r}
+model_ptm$PTM.Model %>% filter(Protein == x, Label == "CCCP vs Ctrl")
+model_ptm$PROTEIN.Model %>% filter(Protein == prot, Label == "CCCP vs Ctrl")
+model_ptm$ADJUSTED.Model %>% filter(Protein == x, Label == "CCCP vs Ctrl")
+```
+
+```{r}
+resPtm <- model_ptm$PTM.Model %>% filter(Protein == x, Label == "CCCP vs Ctrl")
+resProt <- model_ptm$PROTEIN.Model %>% filter(Protein == prot, Label == "CCCP vs Ctrl")
+resPtm$log2FC <- resPtm$log2FC-resProt$log2FC
+s2 <- resPtm$SE^2
+s2prot <- resProt$SE^2
+resPtm$SE <- sqrt(s2+s2prot)
+numer <- (s2+s2prot)^2
+#hier gaat het dan mis waarschijnlijk, bij de df
+denom <- (s2^2/resPtm$DF+s2prot^2/resProt$DF)
+resPtm$DF <- numer/denom
+resPtm$Tvalue <- resPtm$log2FC/resPtm$SE
+resPtm$pvalue <- 2*pt(abs(resPtm$Tvalue),resPtm$DF,lower.tail=FALSE)
+resPtm$adj.pvalue <- NA
+resPtm
+```
+
+->  we see that the adjusted model is calculated in the exact same way as usual
+(resPtm = model_ptm$ADJUSTED.Model %>% filter(Protein == x, Label == "CCCP vs Ctrl"))
+
+# Reanalysis of "wrong" model -> still significant?
+
+What if we reanalyse some of the ptms that were modelled with ABUNDANCE~GROUP+(1|SUBJECT) by modelling them with ABUNDANCE~GROUP+(1|SUBJECT)+(1|SUBJECT:GROUP). Do they still remain significant?
+We will do this for a ptm in which both ptm and parent protein are modelled with the "wrong" model, only the parent protein, or only the ptm 
+
+## Both ptm and protein with "wrong" model
+
+The PTM "P18206_K0216" (and corresponding protein) was modelled via the formula ABUNDANCE~GROUP+(1|SUBJECT), which did not consider that the subjects are from different groups (CCCP-BCH1 is not the same as Ctrl-BCH1, but they are treated the same)
+What happens to the adjustment if we use the correct model ABUNDANCE~GROUP+(1|SUBJECT)+(1|SUBJECT:GROUP)
+(Another possibility would be the recoding of the GROUP variable in the dataset)
+
+We first look at the original MSstats data
+```{r}
+x = "P50395_K422"
+prot = strsplit(x, "_|-")[[1]][1]
+CCCP = model_ptm$PTM.Model %>% filter(Label=="CCCP vs Ctrl")
+CCCPp = model_ptm$PROTEIN.Model %>% filter(Label=="CCCP vs Ctrl")
+index_ptm = which(CCCP$Protein==x)
+index_prot = which(CCCPp$Protein==prot)
+model_ptm$Model.Details$PTM[[index_ptm]] 
+model_ptm$Model.Details$PROTEIN[[index_prot]]
+```
+
+```{r}
+model_ptm$PTM.Model %>% filter(Protein == x, Label == "CCCP vs Ctrl")
+model_ptm$PROTEIN.Model %>% filter(Protein == prot, Label == "CCCP vs Ctrl")
+model_ptm$ADJUSTED.Model %>% filter(Protein == x, Label == "CCCP vs Ctrl")
+```
+
+We will now refit the data
+
+```{r}
+#Get the dataframe from the lmer object
+df_ptm <- model_ptm$Model.Details$PTM[[index_ptm]] %>% lme4::getData()
+df_ptm$GROUP <- relevel(df_ptm$GROUP, ref = "Ctrl")
+df_prot <- model_ptm$Model.Details$PROTEIN[[index_prot]] %>% lme4::getData()
+df_prot$GROUP <- relevel(df_prot$GROUP, ref = "Ctrl")
+modptm <- lme4::lmer(ABUNDANCE~GROUP+(1|SUBJECT)+(1|SUBJECT:GROUP), data= df_ptm)
+modprot <- lme4::lmer(ABUNDANCE~GROUP+(1|SUBJECT)+(1|SUBJECT:GROUP), data= df_prot)
+```
+
+```{r}
+#For the degrees of freedom
+#This approach was found in MSstats:::.fitModelForGroupComparison
+ptmDF <- lm(ABUNDANCE ~ GROUP + SUBJECT + GROUP:SUBJECT, data = df_ptm)$df.residual
+protDF <- lm(ABUNDANCE ~ GROUP + SUBJECT + GROUP:SUBJECT, data = df_prot)$df.residual
+```
+
+
+```{r}
+summary_ptm <- summary(modptm)
+summary_prot <- summary(modprot)
+# Extract the t-value, standard error, and estimate for a specific group comparison
+comparison <- "GROUPCCCP"  # Specify the desired group comparison
+
+comparison_row_ptm <- which(rownames(summary_ptm$coefficients) == comparison)
+t_ptm <- summary_ptm$coefficients[comparison_row_ptm, "t value"]
+se_ptm <- summary_ptm$coefficients[comparison_row_ptm, "Std. Error"]
+estimate_ptm <- summary_ptm$coefficients[comparison_row_ptm, "Estimate"]
+
+comparison_row_prot <- which(rownames(summary_prot$coefficients) == comparison)
+t_prot <- summary_prot$coefficients[comparison_row_prot, "t value"]
+se_prot <- summary_prot$coefficients[comparison_row_prot, "Std. Error"]
+estimate_prot <- summary_prot$coefficients[comparison_row_prot, "Estimate"]
+```
+
+MSstats adjustment
+
+```{r}
+adjusted <- tibble(log2FC = estimate_ptm-estimate_prot)
+s2 <- se_ptm^2
+s2prot <- se_prot^2
+adjusted$SE <- sqrt(s2+s2prot)
+numer <- (s2+s2prot)^2
+#hier gaat het dan mis waarschijnlijk, bij de df
+denom <- (s2^2/ptmDF+s2prot^2/protDF)
+adjusted$DF <- numer/denom
+adjusted$Tvalue <- adjusted$log2FC/adjusted$SE
+adjusted$pvalue <- 2*pt(abs(adjusted$Tvalue),adjusted$DF,lower.tail=FALSE)
+adjusted
+```
+
+-> the pvalue has gotten a lot bigger, high possibility that the adjusted pvalue would be higher than 0.05
+You can also see that the se has gotten bigger!
+
+```{r}
+model_ptm$ADJUSTED.Model %>% filter(Label=="CCCP vs Ctrl", Adjusted==T, adj.pvalue < 0.05) %>% arrange(desc(pvalue)) %>% head(5)
+```
+
+-> smallest pvalue that maintains significance in the original dataset is 0.0045 < 0.01
+
+We can replace the original ptm values with the new ones and redo the p value adjustment
+
+```{r}
+adjusted <- adjusted %>% mutate(
+  Protein = x,
+  Label = "CCCP vs Ctrl",
+  adj.pvalue = NA,
+  GlobalProtein = prot,
+  Adjusted = TRUE
+)
+model_ptm$ADJUSTED.Model[model_ptm$ADJUSTED.Model$Protein==x & 
+                           model_ptm$ADJUSTED.Model$Label=="CCCP vs Ctrl",] <- 
+                                adjusted[,colnames(model_ptm$ADJUSTED.Model)]
+```
+
+```{r}
+new_adjusted <- model_ptm$ADJUSTED.Model %>% filter(Adjusted == T, Label == "CCCP vs Ctrl")
+new_adjusted$adj.pvalue <- p.adjust(new_adjusted$pvalue, method = "BH")
+new_adjusted %>% filter(Protein == x)
+```
+
+-> The adjusted pvalue has indeed become higher than 0.05
+
+### Msqrob2PTMs values for this ptm
+
+```{r}
+#De normale msqrob2PTM workflow nog toevoegen (lees het in gewoon, niet helemaal doen hier!)
+#zowel normaal als met hun inputdata zeker?
+rowData(pe[["ptmRel"]])$groupCCCP[x,]
+rowData(pe[["ptmMSstatsRel"]])$groupCCCP[x,]
+```
+
+We can also attempt to perform the MSstats emulation via msqsrob models
+
+```{r}
+ptm = readQFeatures(table = df_ptm %>% pivot_wider(names_from = originalRUN, values_from = ABUNDANCE, id_cols = Protein),
+                    ecol = 2:15, fnames = "Protein", name = "ptm")
+colData(ptm)$GROUP = sapply(str_split(rownames(colData(ptm)), "-"), function(x) x[1]) %>% 
+        as.factor %>% relevel(ref = "Ctrl")
+colData(ptm)$SUBJECT= str_extract(rownames(colData(ptm)), "B[0-9]")
+ptm = msqrob(ptm, i = "ptm", formula = ABUNDANCE~GROUP+(1|SUBJECT)+(1|SUBJECT:GROUP), robust = F)
+```
+
+```{r}
+L <- makeContrast(c("GROUPCombo = 0", 
+                    "GROUPCCCP = 0", 
+                    "GROUPUSP30_OE = 0", 
+                    "GROUPCombo - GROUPCCCP = 0",
+                    "GROUPCCCP - GROUPUSP30_OE = 0", 
+                    "GROUPCombo - GROUPUSP30_OE = 0"), 
+                  parameterNames = rowData(ptm[["ptm"]])$msqrobModels[[1]] %>%
+                  getCoef %>%
+                  names)
+ptm <- hypothesisTest(object = ptm, i = "ptm", contrast = L, overwrite = T)
+rowData(ptm[["ptm"]])[["GROUPCCCP"]][x,]
+```
+```{r}
+pr = readQFeatures(table = df_prot %>% pivot_wider(names_from = originalRUN, values_from = ABUNDANCE, id_cols = Protein),
+                    ecol = 2:15, fnames = "Protein", name = "protein")
+colData(pr)$GROUP = sapply(str_split(rownames(colData(pr)), "-"), function(x) x[1]) %>% 
+        as.factor %>% relevel(ref = "Ctrl")
+colData(pr)$SUBJECT= str_extract(rownames(colData(pr)), "B[0-9]")
+pr = msqrob(pr, i = "protein", formula = ABUNDANCE~GROUP+(1|SUBJECT)+(1|SUBJECT:GROUP), robust = F)
+pr <- hypothesisTest(object = pr, i = "protein", contrast = L, overwrite = T)
+rowData(pr[["protein"]])[["GROUPCCCP"]][prot,]
+```
+
+MSstats like adjustment
+
+```{r}
+  resPtm <- rowData(ptm[["ptm"]])[["GROUPCCCP"]][x,]
+  resPtm$df <- rowData(ptm[["ptm"]])$msqrobModels[[x]] %>% getDF
+  resPtm$se <- resPtm$se * (rowData(ptm[["ptm"]])$msqrobModels[[x]] %>% getSigma)/(rowData(ptm[["ptm"]])$msqrobModels[[x]] %>% getSigmaPosterior())
+  resProt <- rowData(pr[["protein"]])[["GROUPCCCP"]][prot,]
+  resProt$se <- resProt$se * (rowData(pr[["protein"]])$msqrobModels[[prot]] %>% getSigma) / (rowData(pr[["protein"]])$msqrobModels[[prot]] %>%getSigmaPosterior)
+  resProt$df <- rowData(pr[["protein"]])$msqrobModels[[prot]] %>% getDF
+  #resProt <- resProt[rowData(pe[["ptmMSstatsWithProtein"]])$PROTEIN,]
+  resPtm$logFC <- resPtm$logFC-resProt$logFC
+  s2 <- resPtm$se^2
+  s2prot <- resProt$se^2
+  resPtm$se <- sqrt(s2+s2prot)
+  numer <- (s2+s2prot)^2
+  denom <- (s2^2/resPtm$df+s2prot^2/resProt$df)
+  resPtm$df <- numer/denom
+  resPtm$t <- resPtm$logFC/resPtm$se
+  resPtm$pval <- 2*pt(abs(resPtm$t),resPtm$df,lower.tail=FALSE)
+  resPtm$adjPval = NA
+  resPtm
+```
+
+-> in msqrob, the df are not derived in the same way as in MSstats, which is why there is a small difference in p value
+However, the rest of the values are the same (see above at new_adjusted %>% filter(Protein == x))
+
+
+## Only ptm with "wrong" model
+
+The PTM "P13010_K307" was modelled via the formula ABUNDANCE~GROUP+(1|SUBJECT), which did not consider that the subjects are from different groups (CCCP-BCH1 is not the same as Ctrl-BCH1, but they are treated the same)
+The protein was modelled with the correct model
+What happens to the adjustment if we use the correct model ABUNDANCE~GROUP+(1|SUBJECT)+(1|SUBJECT:GROUP) as well on ptm level?
+
+```{r}
+x = "P13010_K307"
+prot = strsplit(x, "_|-")[[1]][1]
+CCCP = model_ptm$PTM.Model %>% filter(Label=="CCCP vs Ctrl")
+CCCPp = model_ptm$PROTEIN.Model %>% filter(Label=="CCCP vs Ctrl")
+index_ptm = which(CCCP$Protein==x)
+index_prot = which(CCCPp$Protein==prot)
+model_ptm$Model.Details$PTM[[index_ptm]] 
+model_ptm$Model.Details$PROTEIN[[index_prot]]
+```
+
+```{r}
+model_ptm$PTM.Model %>% filter(Protein == x, Label == "CCCP vs Ctrl")
+model_ptm$PROTEIN.Model %>% filter(Protein == prot, Label == "CCCP vs Ctrl")
+model_ptm$ADJUSTED.Model %>% filter(Protein == x, Label == "CCCP vs Ctrl")
+```
+
+
+```{r}
+df_ptm <- model_ptm$Model.Details$PTM[[index_ptm]] %>% lme4::getData()
+df_ptm$GROUP <- relevel(df_ptm$GROUP, ref = "Ctrl")
+df_prot <- model_ptm$Model.Details$PROTEIN[[index_prot]] %>% lme4::getData()
+df_prot$GROUP <- relevel(df_prot$GROUP, ref = "Ctrl")
+modptm <- lme4::lmer(ABUNDANCE~GROUP+(1|SUBJECT)+(1|SUBJECT:GROUP), data= df_ptm)
+modprot <- lme4::lmer(ABUNDANCE~GROUP+(1|SUBJECT)+(1|SUBJECT:GROUP), data= df_prot)
+```
+
+```{r}
+#For the degrees of freedom
+ptmDF <- lm(ABUNDANCE ~ GROUP + SUBJECT + GROUP:SUBJECT, data = df_ptm)$df.residual
+protDF <- lm(ABUNDANCE ~ GROUP + SUBJECT + GROUP:SUBJECT, data = df_prot)$df.residual
+```
+
+
+```{r}
+summary_ptm <- summary(modptm)
+summary_prot <- summary(modprot)
+# Extract the t-value, standard error, and estimate for a specific group comparison
+comparison <- "GROUPCCCP"  # Specify the desired group comparison
+
+comparison_row_ptm <- which(rownames(summary_ptm$coefficients) == comparison)
+t_ptm <- summary_ptm$coefficients[comparison_row_ptm, "t value"]
+se_ptm <- summary_ptm$coefficients[comparison_row_ptm, "Std. Error"]
+estimate_ptm <- summary_ptm$coefficients[comparison_row_ptm, "Estimate"]
+
+comparison_row_prot <- which(rownames(summary_prot$coefficients) == comparison)
+t_prot <- summary_prot$coefficients[comparison_row_prot, "t value"]
+se_prot <- summary_prot$coefficients[comparison_row_prot, "Std. Error"]
+estimate_prot <- summary_prot$coefficients[comparison_row_prot, "Estimate"]
+```
+
+MSstats adjustment
+
+```{r}
+adjusted <- tibble(log2FC = estimate_ptm-estimate_prot)
+s2 <- se_ptm^2
+s2prot <- se_prot^2
+adjusted$SE <- sqrt(s2+s2prot)
+numer <- (s2+s2prot)^2
+#hier gaat het dan mis waarschijnlijk, bij de df
+denom <- (s2^2/ptmDF+s2prot^2/protDF)
+adjusted$DF <- numer/denom
+adjusted$Tvalue <- adjusted$log2FC/adjusted$SE
+adjusted$pvalue <- 2*pt(abs(adjusted$Tvalue),adjusted$DF,lower.tail=FALSE)
+adjusted
+```
+
+-> the pvalue has gotten a lot bigger, and is clearly non significant
+
+Msqrob2PTMs values for this ptm
+
+```{r}
+#De normale msqrob2PTM workflow nog toevoegen (lees het in gewoon, niet helemaal doen hier!)
+#zowel normaal als met hun inputdata zeker?
+rowData(pe[["ptmRel"]])$groupCCCP[x,]
+rowData(pe[["ptmMSstatsRel"]])$groupCCCP[x,]
+```
+
+## Only protein with "wrong" model
+
+"O14980_K0455" is an example of a ptm that has a parent protein fitted with the wrong model
+
+```{r}
+x = "O14980_K0455"
+prot = strsplit(x, "_|-")[[1]][1]
+CCCP = model_ptm$PTM.Model %>% filter(Label=="CCCP vs Ctrl")
+CCCPp = model_ptm$PROTEIN.Model %>% filter(Label=="CCCP vs Ctrl")
+index_ptm = which(CCCP$Protein==x)
+index_prot = which(CCCPp$Protein==prot)
+model_ptm$Model.Details$PTM[[index_ptm]] 
+model_ptm$Model.Details$PROTEIN[[index_prot]]
+```
+
+```{r}
+model_ptm$PTM.Model %>% filter(Protein == x, Label == "CCCP vs Ctrl")
+model_ptm$PROTEIN.Model %>% filter(Protein == prot, Label == "CCCP vs Ctrl")
+model_ptm$ADJUSTED.Model %>% filter(Protein == x, Label == "CCCP vs Ctrl")
+```
+
+We will now refit the data
+
+```{r}
+#Get the dataframe from the lmer object
+df_ptm <- model_ptm$Model.Details$PTM[[index_ptm]] %>% lme4::getData()
+df_ptm$GROUP <- relevel(df_ptm$GROUP, ref = "Ctrl")
+df_prot <- model_ptm$Model.Details$PROTEIN[[index_prot]] %>% lme4::getData()
+df_prot$GROUP <- relevel(df_prot$GROUP, ref = "Ctrl")
+modptm <- lme4::lmer(ABUNDANCE~GROUP+(1|SUBJECT)+(1|SUBJECT:GROUP), data= df_ptm)
+modprot <- lme4::lmer(ABUNDANCE~GROUP+(1|SUBJECT)+(1|SUBJECT:GROUP), data= df_prot)
+```
+
+```{r}
+#For the degrees of freedom
+#This approach was found in MSstats:::.fitModelForGroupComparison
+ptmDF <- lm(ABUNDANCE ~ GROUP + SUBJECT + GROUP:SUBJECT, data = df_ptm)$df.residual
+protDF <- lm(ABUNDANCE ~ GROUP + SUBJECT + GROUP:SUBJECT, data = df_prot)$df.residual
+```
+
+
+```{r}
+summary_ptm <- summary(modptm)
+summary_prot <- summary(modprot)
+# Extract the t-value, standard error, and estimate for a specific group comparison
+comparison <- "GROUPCCCP"  # Specify the desired group comparison
+
+comparison_row_ptm <- which(rownames(summary_ptm$coefficients) == comparison)
+t_ptm <- summary_ptm$coefficients[comparison_row_ptm, "t value"]
+se_ptm <- summary_ptm$coefficients[comparison_row_ptm, "Std. Error"]
+estimate_ptm <- summary_ptm$coefficients[comparison_row_ptm, "Estimate"]
+
+comparison_row_prot <- which(rownames(summary_prot$coefficients) == comparison)
+t_prot <- summary_prot$coefficients[comparison_row_prot, "t value"]
+se_prot <- summary_prot$coefficients[comparison_row_prot, "Std. Error"]
+estimate_prot <- summary_prot$coefficients[comparison_row_prot, "Estimate"]
+```
+
+MSstats adjustment
+
+```{r}
+adjusted <- tibble(log2FC = estimate_ptm-estimate_prot)
+s2 <- se_ptm^2
+s2prot <- se_prot^2
+adjusted$SE <- sqrt(s2+s2prot)
+numer <- (s2+s2prot)^2
+#hier gaat het dan mis waarschijnlijk, bij de df
+denom <- (s2^2/ptmDF+s2prot^2/protDF)
+adjusted$DF <- numer/denom
+adjusted$Tvalue <- adjusted$log2FC/adjusted$SE
+adjusted$pvalue <- 2*pt(abs(adjusted$Tvalue),adjusted$DF,lower.tail=FALSE)
+adjusted
+```
+
+-> the pvalue has gotten a lot bigger, high possibility that the adjusted pvalue would be higher than 0.05
+You can also see that the se has gotten bigger!
+
+
+We can replace the original ptm values with the new ones in the adjusted dataframe and redo the p value adjustment
+
+```{r}
+adjusted <- adjusted %>% mutate(
+  Protein = x,
+  Label = "CCCP vs Ctrl",
+  adj.pvalue = NA,
+  GlobalProtein = prot,
+  Adjusted = TRUE
+)
+model_ptm$ADJUSTED.Model[model_ptm$ADJUSTED.Model$Protein==x & 
+                           model_ptm$ADJUSTED.Model$Label=="CCCP vs Ctrl",] <- 
+                                adjusted[,colnames(model_ptm$ADJUSTED.Model)]
+```
+
+```{r}
+new_adjusted <- model_ptm$ADJUSTED.Model %>% filter(Adjusted == T, Label == "CCCP vs Ctrl")
+new_adjusted$adj.pvalue <- p.adjust(new_adjusted$pvalue, method = "BH")
+new_adjusted %>% filter(Protein == x)
+```
+
+We can see that the ptm is no longer significant (adjusted pvalue of 0.11)
+
+# Refitting when linear models are used
+
+The PTM "Q92466_K362" was modelled via the mixed model ABUNDANCE~GROUP+(1|SUBJECT)+(1|SUBJECT:GROUP) 
+The protein was modelled with a linear model
+What happens to the adjustment if we use the model ABUNDANCE~GROUP+(1|SUBJECT)+(1|SUBJECT:GROUP) as well on protein level?
+
+```{r}
+x = "Q92466_K362"
+prot = strsplit(x, "_|-")[[1]][1]
+CCCP = model_ptm$PTM.Model %>% filter(Label=="CCCP vs Ctrl")
+CCCPp = model_ptm$PROTEIN.Model %>% filter(Label=="CCCP vs Ctrl")
+index_ptm = which(CCCP$Protein==x)
+index_prot = which(CCCPp$Protein==prot)
+model_ptm$Model.Details$PTM[[index_ptm]] 
+model_ptm$Model.Details$PROTEIN[[index_prot]]
+```
+
+```{r}
+model_ptm$PTM.Model %>% filter(Protein == x, Label == "CCCP vs Ctrl")
+model_ptm$PROTEIN.Model %>% filter(Protein == prot, Label == "CCCP vs Ctrl")
+model_ptm$ADJUSTED.Model %>% filter(Protein == x, Label == "CCCP vs Ctrl")
+```
+
+
+```{r}
+df_ptm <- model_ptm$Model.Details$PTM[[index_ptm]] %>% lme4::getData()
+df_ptm$GROUP <- relevel(df_ptm$GROUP, ref = "Ctrl")
+df_prot <- summarized_ptm$PROTEIN$ProteinLevelData %>% filter(Protein == prot) %>% 
+              dplyr::rename(ABUNDANCE=LogIntensities)
+df_prot$GROUP <- relevel(df_prot$GROUP, ref = "Ctrl")
+modptm <- lme4::lmer(ABUNDANCE~GROUP+(1|SUBJECT)+(1|SUBJECT:GROUP), data= df_ptm)
+modprot <- try(lme4::lmer(ABUNDANCE~GROUP+(1|SUBJECT)+(1|SUBJECT:GROUP), data= df_prot))
+```
+
+```{r}
+df_prot
+```
+
+-> There is no data available on bioreplicate 2, so the model is not estimable for the protein
+-> adjustment is impossible
+
+```{r}
+df_ptm
+```
+
+-> df_ptm does contain data about the second biorepeat. 
+When using the linear model at the protein level, the adjustment for biorepeat 2 occurs with only information about biorepeat 1
+-> this could possibly introduce artificial differences
+
+# Refitting of all ptms with full mixed model
+
+Now we will take all ptms that were flagged as adjustable by MSstatsPTM (so that should have associated protein data) and try to fit the full mixed model on both the ptm and protein data, and afterwards do the MSstats adjustment. Then we can estimate how many ptms would actually be significant when this linear model and incorrect mixed model was not used. This situation is then more comparable to msqrob2PTM that does not change the model formula if it cannot be fitted.
+
+Example for one comparison: CCCP vs Ctrl
+
+Original number of significant ptms in this comparison according to the original msstats data
+
+```{r}
+model_ptm$ADJUSTED.Model %>% filter(Adjusted == T, Label == "CCCP vs Ctrl", adj.pvalue <= 0.05) %>% nrow
+```
+
+We will now for all adjusted ptms that had been estimated for that comparison redo the modelling with the full mixed model, then redo the adjustment and see how many ptms remain significant
+
+```{r}
+adjusted_ <- tibble()
+  all_ptms <- model_ptm$ADJUSTED.Model %>% 
+    filter(Adjusted == T, Label == "CCCP vs Ctrl") %>% 
+    pull(Protein) %>% unique %>% as.character
+CCCP = model_ptm$PTM.Model %>% filter(Label=="CCCP vs Ctrl")
+CCCPp = model_ptm$PROTEIN.Model %>% filter(Label=="CCCP vs Ctrl")
+for (x in all_ptms){
+  adjusted <- tibble(Protein = x)
+prot = strsplit(x, "_|-")[[1]][1]
+
+index_ptm = which(CCCP$Protein==x)
+index_prot = which(CCCPp$Protein==prot)
+
+if((!prot %in% CCCPp$Protein) | is.null(model_ptm$Model.Details$PTM[[index_ptm]])){next}
+
+df_ptm <- tryCatch({
+    model_ptm$Model.Details$PTM[[index_ptm]] %>% lme4::getData()
+}, error = function(err) {
+  #in this case it is a linear model
+    model_ptm$Model.Details$PTM[[index_ptm]]$model %>%
+    mutate(SUBJECT = "BCH1")
+})
+
+df_ptm$GROUP <- tryCatch({
+    relevel(df_ptm$GROUP, ref = "Ctrl")
+}, error = function(err) {
+    "no comparison possible"
+})
+  
+  
+df_prot <- tryCatch({
+    model_ptm$Model.Details$PROTEIN[[index_prot]] %>% lme4::getData()
+}, error = function(err) {
+    model_ptm$Model.Details$PROTEIN[[index_prot]]$model %>%
+    mutate(SUBJECT = "BCH1")
+})
+df_prot$GROUP <- tryCatch({
+    relevel(df_prot$GROUP, ref = "Ctrl")
+}, error = function(err) {
+    "no comparison possible"
+})
+
+modptm <- tryCatch({
+    lme4::lmer(ABUNDANCE~GROUP+(1|SUBJECT)+(1|SUBJECT:GROUP), data= df_ptm)
+}, error = function(err) {
+    "unfittable"
+})
+modprot <- tryCatch({
+    lme4::lmer(ABUNDANCE~GROUP+(1|SUBJECT)+(1|SUBJECT:GROUP), data= df_prot)
+}, error = function(err) {
+    "unfittable"
+})
+
+#if unfittable everything gets NA, or if the control group has no data
+if(class(modptm) == "character" | class(modprot) == "character" | (df_ptm$GROUP[1] == "no comparison possible") |
+   (df_prot$GROUP[1] == "no comparison possible")){
+    adjusted$log2FC <- NA
+    adjusted$SE <- NA
+    adjusted$DF <- NA
+    adjusted$Tvalue <- NA
+    adjusted$pvalue <- NA
+    adjusted_ <- rbind(adjusted_, adjusted)
+    next  
+}
+  
+
+
+#For the degrees of freedom
+ptmDF <- lm(ABUNDANCE ~ GROUP + SUBJECT + GROUP:SUBJECT, data = df_ptm)$df.residual
+protDF <- lm(ABUNDANCE ~ GROUP + SUBJECT + GROUP:SUBJECT, data = df_prot)$df.residual
+
+summary_ptm <- summary(modptm)
+summary_prot <- summary(modprot)
+# Extract the t-value, standard error, and estimate for a specific group comparison
+comparison <- "GROUPCCCP"  # Specify the desired group comparison
+
+if(!comparison %in% rownames(summary_ptm$coefficients)){next}
+comparison_row_ptm <- which(rownames(summary_ptm$coefficients) == comparison)
+t_ptm <- summary_ptm$coefficients[comparison_row_ptm, "t value"]
+se_ptm <- summary_ptm$coefficients[comparison_row_ptm, "Std. Error"]
+estimate_ptm <- summary_ptm$coefficients[comparison_row_ptm, "Estimate"]
+
+comparison_row_prot <- which(rownames(summary_prot$coefficients) == comparison)
+t_prot <- summary_prot$coefficients[comparison_row_prot, "t value"]
+se_prot <- summary_prot$coefficients[comparison_row_prot, "Std. Error"]
+estimate_prot <- summary_prot$coefficients[comparison_row_prot, "Estimate"]
+
+adjusted$log2FC = estimate_ptm-estimate_prot
+s2 <- se_ptm^2
+s2prot <- se_prot^2
+adjusted$SE <- sqrt(s2+s2prot)
+numer <- (s2+s2prot)^2
+#hier gaat het dan mis waarschijnlijk, bij de df
+denom <- (s2^2/ptmDF+s2prot^2/protDF)
+adjusted$DF <- numer/denom
+adjusted$Tvalue <- adjusted$log2FC/adjusted$SE
+adjusted$pvalue <- 2*pt(abs(adjusted$Tvalue),adjusted$DF,lower.tail=FALSE)
+adjusted_ <- rbind(adjusted_, adjusted)
+}
+```
+
+```{r}
+adjusted_$adjPval = p.adjust(adjusted_$pvalue, method = "BH")
+adjusted_ %>% arrange(adjPval)
+```
+
+```{r}
+adjusted_ %>% filter(adjPval < 0.05) %>% nrow
+```
+
+-> went from 356 significant ptms to 55
+
+```{r}
+rowData(pe[["ptmRel"]])$groupCCCP %>% as.data.frame %>% filter(adjPval <= 0.05) %>% nrow
+```
+
+```{r}
+intersect(adjusted_ %>% filter(adjPval < 0.05) %>% pull(Protein),
+          rowData(pe[["ptmRel"]])$groupCCCP %>% as.data.frame %>% filter(adjPval <= 0.05) %>% rownames)
+```
+

@@ -1,0 +1,428 @@
+---
+title: "phospho mock no GP"
+output:
+  html_document:
+    code_download: yes
+    theme: cosmo
+    toc: yes
+    toc_depth: 4
+    toc_float:
+      collapsed: yes
+    highlight: tango
+    number_sections: yes
+    df_print: paged
+  pdf_document:
+    toc: yes
+    toc_depth: '4'
+---
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "C:/Users/Nina/OneDrive - UGent/Documenten/Doctoraat/msqrobPTM paper/mock analyses/")
+```
+
+```{r message=FALSE}
+library(QFeatures)
+library(msqrob2)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(gt)
+library(plotly)
+library(stageR)
+library(poolr)
+library(RColorBrewer)
+library(seqinr)
+library(stringr)
+library(ExploreModelMatrix)
+library(data.table)
+```
+
+
+
+# Import data
+
+```{r}
+metadata <- read.csv("Experimental Design.csv")
+```
+
+```{r}
+df <- read.csv("evidence.txt",header=TRUE, sep = ",")
+#I can ignore the sigma proteins (those were just used for QC purposes)
+#Only take B and y samples
+samples <- metadata %>% filter(Subset=="y",
+                               grepl("B", Condition)) %>%
+           pull(File) %>% gsub(".raw", "", .)
+#filter out QC stuff
+df <- df %>% filter(grepl(paste(samples, collapse = "|"), df$Raw.file),
+                    !grepl("Sigma", df$Proteins))
+#filter out phospho sites with less than 75% probability
+#(other filtering options are possible)
+filter_rows <- sapply(df$Phospho..STY..Probabilities, function(x){
+  if (!x==""){
+    prob <- str_extract_all(x,  "(?<=\\().+?(?=\\))")[[1]]
+    if (!any(as.double(prob) > 0.75)){return(which(df$Phospho..STY..Probabilities == x))}
+  }
+}, USE.NAMES = F)
+filter_rows <- unique(unlist(filter_rows))
+nrow(df)
+df <- df[-filter_rows,]
+nrow(df)
+#Now get format into wide format
+df_wide <- pivot_wider(df, id_cols = c("Sequence", "Modifications", "Modified.sequence", "Proteins", "Leading.proteins",
+                                        "Reverse", "Potential.contaminant", "Protein.group.IDs", "Leading.razor.protein"),
+                                                                          #Is dat hier de beste manier om met 
+                                                                          #gedupliceerde features om te gaan?
+                       names_from = "Raw.file", names_prefix = "Intensity_", values_from = "Intensity", values_fn = max)
+```
+
+
+```{r}
+ecols <- grep("Intensity",colnames(df_wide))
+#order dataframe by protein, for the normalisation step
+df_wide = df_wide[order(df_wide$Leading.razor.protein),]
+pe <- readQFeatures(df_wide,ecol= ecols,name="peptidoformRaw", fnames = "Modified.sequence")
+```
+
+
+## Experimental Layout
+
+```{r}
+metadata <- read.csv("Experimental Design.csv")
+```
+
+```{r}
+colData(pe)$file <- sapply(str_split(rownames(colData(pe)), "_"), function(x) x[[2]])
+rownames(metadata) <- metadata$File
+colData(pe)$condition <- metadata[colData(pe)$file,]$Condition
+colData(pe)$condition <- sapply(colData(pe)$condition, function(x) 
+  ifelse(grepl("A", x), "A", "B"))
+colData(pe)$subset <- metadata[colData(pe)$file,]$Subset
+colData(pe)
+```
+
+
+```{r}
+MSnbase::plotNA(assay(pe[["peptidoformRaw"]])) +
+  xlab("Peptide index (ordered by data completeness)")
+```
+
+
+# Preprocessing
+```{r}
+nrow(assay(pe[["peptidoformRaw"]]))
+pe[["peptidoformRaw"]] <- pe[["peptidoformRaw"]][rowData(pe[["peptidoformRaw"]])$Proteins %in%
+                                                   smallestUniqueGroups(rowData(pe[["peptidoformRaw"]])$Proteins), ]
+nrow(assay(pe[["peptidoformRaw"]]))
+```
+
+
+```{r}
+rowData(pe[["peptidoformRaw"]])$nNonZero <- rowSums(assay(pe[["peptidoformRaw"]]) > 0, na.rm = T)
+pe <- pe[rowData(pe[["peptidoformRaw"]])$nNonZero>2,,]
+pe <- zeroIsNA(pe, i = "peptidoformRaw")
+pe <- filterFeatures(pe, ~Reverse != "+")
+pe <- filterFeatures(pe, ~Potential.contaminant != "+")
+pe <- logTransform(pe, base = 2, i = "peptidoformRaw", name = "peptidoformLog")
+pe <- QFeatures::normalize(pe, method = "center.median", i = "peptidoformLog", name = "peptidoform")
+colData(pe[["peptidoform"]]) <- colData(pe)
+```
+
+
+## Normalisation via robust summarisation
+
+
+```{r,warning=FALSE}
+pe <- aggregateFeatures(pe,
+ i = "peptidoform",
+ fcol = "Leading.razor.protein",
+ na.rm = TRUE,
+ name = "proteinRobust",
+ fun = MsCoreUtils::robustSummary)
+```
+
+```{r}
+#Only take pepforms that have a parent protein
+#(when there is no global profiling dataset, this will be all peptidoforms)
+pepWithProtein <- rowData(pe[["peptidoform"]])$Proteins %in% rownames(pe[["proteinRobust"]])
+pePepWithProtein  <- pe[["peptidoform"]][pepWithProtein,]
+pe <- addAssay(pe,pePepWithProtein,"pepformRel")
+#normalisation for protein abundance step
+assay(pe[["pepformRel"]]) <- assay(pe[["pepformRel"]]) - assay(pe[["proteinRobust"]])[rowData(pe[["pepformRel"]])$Proteins,colnames(assay(pe[["pepformRel"]]))]
+boxplot(assay(pe[["pepformRel"]]))
+```
+
+```{r}
+filtering <- (rowSums(assay(pe[["pepformRel"]]) != 0, na.rm=TRUE)) > 0 & 
+  (rowSds(assay(pe[["pepformRel"]]), na.rm=TRUE) > 1e-4) & 
+          (rowSums(is.na(assay(pe[["pepformRel"]]))) < (ncol(assay(pe[["pepformRel"]]))-1))
+pe[["pepformRel"]] <- pe[["pepformRel"]][filtering,]
+pe <- zeroIsNA(pe, "pepformRel")
+```
+
+
+
+# DPTM
+
+## ptm summarisatie
+
+### Determine location of ptm
+
+```{r}
+fasta <- "human.fasta"
+parsed_fasta <- read.fasta(file = fasta, seqtype = "AA", as.string = T)
+```
+
+  
+```{r}
+#modified sequence column contains _ that does not matter, but hinders location determining
+rowData(pe[["pepformRel"]])$modified_sequence <- gsub("_", "", rowData(pe[["pepformRel"]])$Modified.sequence)
+```
+
+  
+
+```{r}
+get_ptm_location <- function(feature, data, fasta, mod_column = "Modifications", 
+                             peptide_seq_column = "Sequence", mod_seq_column = "modified_sequence", 
+                             protein_column = "Leading.razor.protein", split = ",", collapse = ", "){
+  prot <- data[feature,][[protein_column]]
+  pep_seq <- data[feature,][[peptide_seq_column]]
+  mod_seq <- data[feature,][[mod_seq_column]]
+  prot_seq <- fasta[[prot]][1]
+
+  #find location of peptide in protein
+  #add -1 here, so that the addition of the location later on is correct
+  pep_location <- unlist(lapply(gregexpr(pattern = pep_seq, prot_seq), min)) - 1
+  final_mod <- c()
+  j <- mod_seq
+  #go over the modifications inside the modified sequence
+  for(mod in regmatches(mod_seq, gregexpr("\\(.*?\\)\\)", mod_seq, perl=T))[[1]]){
+    #find location of modification in peptide
+    mod_location <- unlist(lapply(gregexpr(pattern = mod, j, fixed = T), min))
+    #get location in protein (-1 because else it gives you the location after because of the presence of the modification in the string)
+    location <- mod_location + pep_location -1
+    #add location to modification
+    mod_ <- paste(mod, location)
+    #save modification
+    final_mod <- c(final_mod, mod_)
+    #now remove current modification from the sequence, so that we can continue to the next mod
+    str_sub(j, mod_location, nchar(mod)+mod_location-1) <- ""
+  }
+  return(paste(final_mod, collapse = collapse))
+}
+```
+
+```{r}
+rowData(pe[["pepformRel"]])$mod <- sapply(rownames(rowData(pe[["pepformRel"]])), function(x){
+    get_ptm_location(x, rowData(pe[["pepformRel"]]), parsed_fasta)
+}, USE.NAMES = F)
+```
+
+### Get PTM variable
+In our case, a ptm is a unique protein - modification + location combination.
+
+```{r}
+#Add ptm variable = protein + modification 
+#Do this only for peptidoforms with modifications
+rowData(pe[["pepformRel"]])$ptm <- ifelse(rowData(pe[["pepformRel"]])$mod != "",
+                                          #if there is mod, add ptm
+                                               mapply(function(x, y) {
+vector2 <- strsplit(y, ", ")[[1]]
+result <- lapply(vector2, function(i) paste(x, i, sep = "-"))
+final_result <- paste(unlist(result), collapse = ", ")
+}, rowData(pe[["pepformRel"]])$Leading.razor.protein, rowData(pe[["pepformRel"]])$mod), 
+#else add empty string
+                                               "")
+```
+
+First, we need a vector of all of these unique ptms.
+
+```{r}
+#Get all unique PTMs
+ptms <- unique(unlist(strsplit(rowData(pe[["pepformRel"]])$ptm, split = ", ", fixed = TRUE)))
+```
+
+For every unique ptm, we take all its associated peptidoforms and aggregate all its intensity values per sample into one intensity value per sample for that ptm.
+
+```{r}
+#For each ptm do
+ptm_x_assay <- sapply(seq(1:length(ptms)), function(i){ 
+  x <- ptms[i]
+  #Get current protein and mod from ptm
+  prot <- str_split(x, "-", 2)[[1]][1]
+  current_ptm <- str_split(x, "-", 2)[[1]][2]
+  #filter on that protein and on that mod to obtain all peptidoforms that correspond to the ptm
+  pe_sub <- pe[["pepformRel"]][grepl(prot, rowData(pe[["pepformRel"]])$Leading.razor.protein, fixed = T),]
+  ptm_sub <- pe_sub[grepl(current_ptm, rowData(pe_sub)$mod, fixed = T),]
+  #Get intensity values of those peptidoforms
+  y <- assay(ptm_sub)
+  #And summarise them to 1 row of intensity values: 1 value per sample for that ptm
+  ptm_y <- try(MsCoreUtils::robustSummary(y), silent = T)
+  if (is(ptm_y, "try-error")){
+    ptm_y <- rep(NA, ncol(y))}
+  ptm_y
+})
+#Then we get the intensity assay on ptm level
+ptm_x_assay <- t(ptm_x_assay)
+rownames(ptm_x_assay) <- ptms
+```
+
+### Add to QFeatures object
+
+Filter out ptms with all zero intensities
+
+```{r}
+print(paste(nrow(ptm_x_assay), "ptms before filtering"))
+filtering <- (rowSums(ptm_x_assay != 0, na.rm=TRUE)) > 0 & 
+  (rowSds(ptm_x_assay, na.rm=TRUE) > 1e-4) & 
+          (rowSums(is.na(ptm_x_assay)) < (ncol(ptm_x_assay)-1)) & 
+  (rowSums(is.finite(ptm_x_assay)) > 1)
+ptm_x_assay <- ptm_x_assay[filtering,]
+print(paste(nrow(ptm_x_assay), "ptms after filtering"))
+```
+
+```{r}
+all(rownames(colData(pe)) == colnames(ptm_x_assay))
+rowdata <- data.frame(ptm = rownames(ptm_x_assay))
+rowdata$protein <- sapply(str_split(rowdata$ptm, pattern=" "),function(x) x[1])
+ptm_y_assay <- SummarizedExperiment(assays=as.matrix(ptm_x_assay), rowData=rowdata, colData=colData(pe))
+```
+
+
+```{r}
+pe <- addAssay(pe, ptm_y_assay, "ptmRel")
+pe <- zeroIsNA(pe, "ptmRel")
+```
+
+# Simulations
+
+### Peptidoform level
+
+```{r warning=FALSE}
+set.seed(745)
+pvals <- matrix(NA,nrow=nrow(assay(pe[["pepformRel"]])),ncol=5)
+adj_pvals <- matrix(NA,nrow=nrow(assay(pe[["pepformRel"]])),ncol=5)
+fprs <- c()
+L <- makeContrast(c("conditionA = 0"), parameterNames = c("(Intercept)", "conditionA"))
+
+for (i in 1:5)
+{
+# if(i%%50==0){
+#   print(i)
+# }
+#There are 26 samples
+nSamp <- colData(pe) %>% rownames %>% unique() %>% length()
+#We randomly choose 13 out of 26 samples
+mocks <- sample(colData(pe) %>% rownames %>% unique(),nSamp%/%2)
+colData(pe)$condition <- "B"
+#those 9 get "A" assigned, rest gets B
+colData(pe)[mocks,]$condition <- "A"
+colData(pe)$condition <- relevel(as.factor(colData(pe)$condition), ref = "B")
+
+colData(pe[["pepformRel"]]) <- colData(pe)
+
+pe <- msqrob2::msqrob(object = pe, i = "pepformRel", formula = ~condition, robust=FALSE, overwrite = T)
+pe <- hypothesisTest(object = pe, i = "pepformRel", contrast = L, overwrite = T)
+pvals[,i] <- rowData(pe)[["pepformRel"]]$conditionA$pval
+adj_pvals[,i] <- rowData(pe)[["pepformRel"]]$conditionA$adjPval
+hist(pvals, breaks = 50, main = "Histogram of pvals - peptidoform level - no robust regression", cex.lab=1.5, cex.axis=1.5, cex.main=1.5, cex.sub=1.5)
+}
+
+```
+
+
+
+```{r warning=FALSE}
+set.seed(745)
+pvals <- matrix(NA,nrow=nrow(assay(pe[["pepformRel"]])),ncol=5)
+adj_pvals <- matrix(NA,nrow=nrow(assay(pe[["pepformRel"]])),ncol=5)
+L <- makeContrast(c("conditionA = 0"), parameterNames = c("(Intercept)", "conditionA"))
+
+for (i in 1:5)
+{
+# if(i%%50==0){
+#   print(i)
+# }
+#There are 18 samples
+nSamp <- colData(pe) %>% rownames %>% unique() %>% length()
+#We randomly choose 9 out of 18 samples
+mocks <- sample(colData(pe) %>% rownames %>% unique(),nSamp%/%2)
+colData(pe)$condition <- "B"
+#those 9 get "A" assigned, rest gets B
+colData(pe)[mocks,]$condition <- "A"
+colData(pe)$condition <- relevel(as.factor(colData(pe)$condition), ref = "B")
+
+colData(pe[["pepformRel"]]) <- colData(pe)
+
+pe <- msqrob2::msqrob(object = pe, i = "pepformRel", formula = ~condition, robust=TRUE, overwrite = T)
+pe <- hypothesisTest(object = pe, i = "pepformRel", contrast = L, overwrite = T)
+pvals[,i] <- rowData(pe)[["pepformRel"]]$conditionA$pval
+adj_pvals[,i] <- rowData(pe)[["pepformRel"]]$conditionA$adjPval
+hist(pvals, breaks = 50, main = "Histogram of pvals - peptidoform level - robust regression")
+}
+```
+
+### PTM level
+
+```{r warning=FALSE}
+set.seed(45)
+pvals <- matrix(NA,nrow=nrow(assay(pe[["ptmRel"]])),ncol=5)
+adj_pvals <- matrix(NA,nrow=nrow(assay(pe[["ptmRel"]])),ncol=5)
+L <- makeContrast(c("conditionA = 0"), parameterNames = c("(Intercept)", "conditionA"))
+
+for (i in 1:5)
+{
+# if(i%%50==0){
+#   print(i)
+# }
+#There are 18 samples
+nSamp <- colData(pe) %>% rownames %>% unique() %>% length()
+#We randomly choose 9 out of 18 samples
+mocks <- sample(colData(pe) %>% rownames %>% unique(),nSamp%/%2)
+colData(pe)$condition <- "B"
+#those 9 get "A" assigned, rest gets B
+colData(pe)[mocks,]$condition <- "A"
+colData(pe)$condition <- relevel(as.factor(colData(pe)$condition), ref = "B")
+
+colData(pe[["ptmRel"]]) <- colData(pe)
+
+pe <- msqrob2::msqrob(object = pe, i = "ptmRel", formula = ~condition, robust=FALSE, overwrite = T)
+pe <- hypothesisTest(object = pe, i = "ptmRel", contrast = L, overwrite = T)
+pvals[,i] <- rowData(pe)[["ptmRel"]]$conditionA$pval
+adj_pvals[,i] <- rowData(pe)[["ptmRel"]]$conditionA$adjPval
+hist(pvals, breaks = 50, main = "Histogram of pvals - no robust regression")
+}
+```
+
+
+
+```{r warning=FALSE}
+set.seed(45)
+pvals <- matrix(NA,nrow=nrow(assay(pe[["ptmRel"]])),ncol=5)
+adj_pvals <- matrix(NA,nrow=nrow(assay(pe[["ptmRel"]])),ncol=5)
+L <- makeContrast(c("conditionA = 0"), parameterNames = c("(Intercept)", "conditionA"))
+
+for (i in 1:5)
+{
+# if(i%%50==0){
+#   print(i)
+# }
+#There are 18 samples
+nSamp <- colData(pe) %>% rownames %>% unique() %>% length()
+#We randomly choose 9 out of 18 samples
+mocks <- sample(colData(pe) %>% rownames %>% unique(),nSamp%/%2)
+colData(pe)$condition <- "B"
+#those 9 get "A" assigned, rest gets B
+colData(pe)[mocks,]$condition <- "A"
+colData(pe)$condition <- relevel(as.factor(colData(pe)$condition), ref = "B")
+colData(pe[["ptmRel"]]) <- colData(pe)
+
+pe <- msqrob2::msqrob(object = pe, i = "ptmRel", formula = ~condition, robust=TRUE, overwrite = T)
+pe <- hypothesisTest(object = pe, i = "ptmRel", contrast = L, overwrite = T)
+pvals[,i] <- rowData(pe)[["ptmRel"]]$conditionA$pval
+adj_pvals[,i] <- rowData(pe)[["ptmRel"]]$conditionA$adjPval
+hist(pvals, breaks = 50, main = "Histogram of pvals - robust regression")
+}
+
+```
+

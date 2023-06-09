@@ -1,0 +1,924 @@
+---
+title: "simulation visualisations"
+output:
+  html_document:
+    code_download: yes
+    theme: cosmo
+    toc: yes
+    toc_depth: 4
+    toc_float:
+      collapsed: yes
+    highlight: tango
+    number_sections: yes
+    df_print: paged
+  pdf_document:
+    toc: yes
+    toc_depth: '4'
+---
+
+```{r}
+library(readxl)
+library(tidyverse)
+```
+
+PTM LEVEL
+
+```{r, setup, include=F}
+knitr::opts_knit$set(root.dir="C:/Users/Nina/OneDrive - UGent/Documenten/Doctoraat/msqrobPTM paper/simulations/")
+```
+
+
+```{r}
+load("MSstats_models/adjusted_models_sim1.rda")
+load("MSstats_models/adjusted_models_sim2.rda")
+```
+
+```{r}
+sign_table11 <- readRDS("simulation 1/sign_table11.rds")
+sign_table12 <- readRDS("simulation 1/sign_table12.rds")
+sign_table13 <- readRDS("simulation 1/sign_table13.rds")
+
+sign_table21 <- readRDS("simulation 2/sign_table21.rds")
+sign_table22 <- readRDS("simulation 2/sign_table22.rds")
+sign_table23 <- readRDS("simulation 2/sign_table23.rds")
+```
+
+```{r}
+msqrob_simulation1 <- rbind(sign_table11, sign_table12, sign_table13)
+msqrob_simulation2 <- rbind(sign_table21, sign_table22, sign_table23)
+```
+
+
+```{r}
+s <- c(.2,.3)
+reps <- c(2,3,5,10)
+cond <- c(2,3,4)
+param_combos <- expand.grid(s, reps, cond)
+```
+
+
+## msstats type visualisations
+
+Some of the functions below were found in the simulation analysis files on Massive from the MSstats team
+
+## sensitivy - fdp plots
+### MSstats
+
+Function to calculate TPR and FDP
+
+```{r}
+tprFdp <- function(df, pval, tp){
+  ord <- order(df[[pval]])
+  df <- df[ord,]
+  df$tpr = as.numeric(cumsum(df[[tp]])/sum(df[[tp]]))
+  df$fdp = as.numeric(cumsum(!df[[tp]])/(1:length(df[[tp]])))
+  df$fpr = as.numeric(cumsum(!df[[tp]])/sum(!df[[tp]]))
+  df
+}
+```
+
+
+#### Simulation 1
+
+```{r}
+for (i in 1:length(adjusted_models_sim1)){
+  adjusted_models_sim1[[i]] <- adjusted_models_sim1[[i]] %>%
+                                mutate(sd = param_combos[i,1], reps = param_combos[i,2],
+                                       conditions = param_combos[i,3], model= "MSstats",
+                                       change = !grepl("NoChange", adjusted_models_sim1[[i]]$GlobalProtein))
+}
+```
+
+```{r}
+for (i in 1:length(adjusted_models_sim1)){
+  adjusted_models_sim1[[i]] <- tprFdp(adjusted_models_sim1[[i]], "pvalue", "change")
+}
+```
+
+```{r}
+point_data <- tibble()
+for (i in 1:24){
+  df <- adjusted_models_sim1[[i]]
+  row_ = sum(df$adj.pvalue < 0.05, na.rm =T)
+  if (row_ == 0){
+    point = tibble(x = 0, y = 0, fpr = 0,
+                   sd = as.factor(df[1,]$sd), 
+                   reps = as.factor(df[1,]$reps), 
+                   conditions = as.factor(df[1,]$conditions),
+                   model = "MSstats")
+  }
+  else {
+  x = df[row_,]$fdp
+  fpr = df[row_,]$fpr
+  y = df[row_,]$tpr
+  sd = as.factor(df[row_,]$sd)
+  reps = as.factor(df[row_,]$reps)
+  conditions = as.factor(df[row_,]$conditions)
+  point = tibble(x = x, y = y, fpr = fpr, sd = sd, reps = reps, conditions = conditions, model = "MSstats")
+  }
+  point_data = rbind(point_data, point)
+}
+```
+
+```{r, fig.height=7, fig.width=12}
+model_df <- do.call("rbind", adjusted_models_sim1)
+
+model_df$reps = as.factor(model_df$reps)
+model_df %>%
+      ggplot(aes(x = fdp, y = tpr, color = reps)) +
+      geom_path() +
+      geom_vline(xintercept=0.05,lty=2) +
+      geom_point(data = point_data, aes(x, y, color = reps)) +
+      facet_grid(vars(sd), vars(conditions))
+```
+
+ROC curve
+
+```{r, fig.height=7, fig.width=12}
+model_df <- do.call("rbind", adjusted_models_sim1)
+
+model_df$reps = as.factor(model_df$reps)
+model_df %>%
+      ggplot(aes(x = fpr, y = tpr, color = reps)) +
+      geom_path() +
+      geom_vline(xintercept=0.05,lty=2) +
+      geom_point(data = point_data, aes(fpr, y, color = reps)) +
+      facet_grid(vars(sd), vars(conditions))
+```
+
+```{r}
+for (i in 1:24){
+  df <- adjusted_models_sim1[[i]]
+  p <- df %>% ggplot(aes(x = fdp, y = tpr)) +
+      geom_path() +
+      geom_vline(xintercept=0.01,lty=2) +
+      geom_point(data = adjusted_models_sim1[[i]][sum(adjusted_models_sim1[[i]]$adj.pvalue < 0.05, na.rm = TRUE), ],
+             aes(x = fdp, y = tpr), cex = 2, color = "blue", size = 3) +
+          ggtitle(paste("sd:", as.character(param_combos[i, 1]), "reps:", 
+                    as.character(param_combos[i,2]), "conditions:", 
+                    as.character(param_combos[i,3])))
+  print(p)
+}
+```
+
+
+
+#### Simulation 2
+
+```{r}
+for (i in 1:length(adjusted_models_sim2)){
+  adjusted_models_sim2[[i]] <- adjusted_models_sim2[[i]] %>%
+                                mutate(sd = param_combos[i,1], reps = param_combos[i,2],
+                                       conditions = param_combos[i,3], model= "MSstats",
+                                       change = !grepl("NoChange", adjusted_models_sim2[[i]]$GlobalProtein))
+}
+```
+
+```{r}
+for (i in 1:length(adjusted_models_sim2)){
+  adjusted_models_sim2[[i]] <- tprFdp(adjusted_models_sim2[[i]], "pvalue", "change")
+}
+```
+
+```{r}
+point_data_2 <- tibble()
+for (i in 1:24){
+  df <- adjusted_models_sim2[[i]]
+  row_ = sum(df$adj.pvalue < 0.05, na.rm =T)
+  if (row_ == 0){
+    point = tibble(x = 0, y = 0, fpr = 0,
+                   sd = as.factor(df[1,]$sd), 
+                   reps = as.factor(df[1,]$reps), 
+                   conditions = as.factor(df[1,]$conditions),
+                   model = "MSstats")
+  }
+  else {
+  x = df[row_,]$fdp
+  fpr = df[row_,]$fpr
+  y = df[row_,]$tpr
+  sd = as.factor(df[row_,]$sd)
+  reps = as.factor(df[row_,]$reps)
+  conditions = as.factor(df[row_,]$conditions)
+  point = tibble(x = x, y = y, fpr = fpr, sd = sd, reps = reps, conditions = conditions, model = "MSstats")
+  }
+  point_data_2 = rbind(point_data_2, point)
+}
+```
+
+```{r, fig.height=7, fig.width=12}
+model_df2 <- do.call("rbind", adjusted_models_sim2)
+model_df2$reps = as.factor(model_df2$reps)
+
+model_df2 %>%
+      ggplot(aes(x = fdp, y = tpr, color = reps)) +
+      geom_path() +
+      geom_vline(xintercept=0.05,lty=2) +
+      geom_point(data = point_data_2, aes(x, y, color = reps)) +
+      facet_grid(vars(sd), vars(conditions))
+```
+
+ROC curve
+
+```{r, fig.height=7, fig.width=12}
+model_df2 %>%
+      ggplot(aes(x = fpr, y = tpr, color = reps)) +
+      geom_path() +
+      geom_vline(xintercept=0.05,lty=2) +
+      geom_point(data = point_data_2, aes(fpr, y, color = reps)) +
+      facet_grid(vars(sd), vars(conditions))
+```
+
+```{r}
+for (i in 1:24){
+  df <- adjusted_models_sim2[[i]]
+  p <- df %>% ggplot(aes(x = fdp, y = tpr)) +
+      geom_path() +
+      geom_vline(xintercept=0.01,lty=2) +
+      geom_point(data = adjusted_models_sim2[[i]][sum(adjusted_models_sim2[[i]]$adj.pvalue < 0.05, na.rm = TRUE), ],
+             aes(x = fdp, y = tpr), cex = 2, color = "blue", size = 3) +
+      ggtitle(paste("sd:", as.character(param_combos[i, 1]), "reps:", 
+                    as.character(param_combos[i,2]), "conditions:", 
+                    as.character(param_combos[i,3])))
+  print(p)
+}
+```
+
+### msqrob
+
+#### Simulation 1
+
+```{r}
+msqrob_simulation1 <- 
+  msqrob_simulation1 %>%     
+  rownames_to_column("Protein") %>%
+  mutate(change = !grepl("NoChange", Protein),
+         dataset = paste(sd, reps, conditions, sep = "_"),
+         model = "msqrob"
+)
+```
+
+```{r}
+msqrob_simulation1$tpr <- 1000
+msqrob_simulation1$fdp <- 1000
+msqrob_simulation1$fpr <- 1000
+for (i in unique(msqrob_simulation1$dataset)){
+  msqrob_simulation1[msqrob_simulation1$dataset==i,] <- tprFdp(msqrob_simulation1[msqrob_simulation1$dataset==i,], "pval", "change")
+}
+```
+
+```{r}
+point_data_3 <- tibble()
+for (i in unique(msqrob_simulation1$dataset)){
+  df <- msqrob_simulation1[msqrob_simulation1$dataset==i,]
+  row_ = sum(df$adjPval < 0.05, na.rm =T)
+  if (row_ == 0){
+    point = tibble(x = 0, y = 0, fpr = 0,
+                   sd = as.factor(df[1,]$sd), 
+                   reps = as.factor(df[1,]$reps), 
+                   conditions = as.factor(df[1,]$conditions))
+  }
+  else {
+  x = df[row_,]$fdp
+  fpr = df[row_,]$fpr
+  y = df[row_,]$tpr
+  sd = as.factor(df[row_,]$sd)
+  reps = as.factor(df[row_,]$reps)
+  conditions = as.factor(df[row_,]$conditions)
+  point = tibble(x = x, y = y, fpr = fpr, sd = sd, reps = reps, conditions = conditions, model = "msqrob")
+  }
+  point_data_3 = rbind(point_data_3, point)
+}
+```
+
+```{r, fig.height=10, fig.width=11}
+msqrob_simulation1$reps = as.factor(msqrob_simulation1$reps)
+
+msqrob_simulation1 %>%
+      ggplot(aes(x = fdp, y = tpr, color = reps)) +
+      geom_path(size=0.8) +
+      geom_vline(xintercept=0.05,lty=2) +
+      geom_point(data = point_data_3, aes(x, y, color = reps), size=2) +
+      facet_grid(vars(conditions), vars(sd), labeller = label_both) +
+      theme(axis.text=element_text(size=11),
+            axis.title=element_text(size=15),
+            strip.text.x = element_text(size = 18),
+            strip.text.y = element_text(size = 18),
+            legend.title = element_text(size=14), 
+            legend.text = element_text(size=11))
+```
+
+ROC curve
+
+```{r, fig.height=10, fig.width=11}
+msqrob_simulation1$reps = as.factor(msqrob_simulation1$reps)
+
+msqrob_simulation1 %>%
+      ggplot(aes(x = fpr, y = tpr, color = reps)) +
+      geom_path(size=0.8) +
+      geom_vline(xintercept=0.05,lty=2) +
+      geom_point(data = point_data_3, aes(fpr, y, color = reps), size=2) +
+      facet_grid(vars(conditions), vars(sd), labeller = label_both) +
+      theme(axis.text=element_text(size=11),
+            axis.title=element_text(size=15),
+            strip.text.x = element_text(size = 18),
+            strip.text.y = element_text(size = 18),
+            legend.title = element_text(size=14), 
+            legend.text = element_text(size=11))
+```
+
+```{r}
+j <- 1
+for (i in unique(msqrob_simulation1$dataset)){
+  df <- msqrob_simulation1[msqrob_simulation1$dataset==i,]
+  p <- df %>% ggplot(aes(x = fdp, y = tpr)) +
+      geom_path() +
+      geom_vline(xintercept=0.01,lty=2) +
+      geom_point(data = df[sum(df$adjPval < 0.05, na.rm = TRUE), ],
+             aes(x = fdp, y = tpr), cex = 2, color = "blue", size = 3) +
+          ggtitle(paste("sd:", as.character(param_combos[j, 1]), "reps:", 
+                    as.character(param_combos[j,2]), "conditions:", 
+                    as.character(param_combos[j,3])))
+  print(p)
+  j <- j + 1
+}
+```
+
+#### Simulation 2
+
+```{r}
+msqrob_simulation2 <- 
+  msqrob_simulation2 %>%     
+  rownames_to_column("Protein") %>%
+  mutate(change = !grepl("NoChange", Protein),
+         dataset = paste(sd, reps, conditions, sep = "_"),
+         model = "msqrob"
+)
+```
+
+```{r}
+msqrob_simulation2$tpr <- 1000
+msqrob_simulation2$fdp <- 1000
+msqrob_simulation2$fpr <- 1000
+for (i in unique(msqrob_simulation2$dataset)){
+  msqrob_simulation2[msqrob_simulation2$dataset==i,] <- tprFdp(msqrob_simulation2[msqrob_simulation2$dataset==i,], "pval", "change")
+}
+```
+
+```{r}
+point_data_4 <- tibble()
+for (i in unique(msqrob_simulation2$dataset)){
+  df <- msqrob_simulation2[msqrob_simulation2$dataset==i,]
+  row_ = sum(df$adjPval < 0.05, na.rm =T)
+  if (row_ == 0){
+    point = tibble(x = 0, y = 0, fpr = 0,
+                   sd = as.factor(df[1,]$sd), 
+                   reps = as.factor(df[1,]$reps), 
+                   conditions = as.factor(df[1,]$conditions))
+  }
+  else {
+  x = df[row_,]$fdp
+  fpr = df[row_,]$fpr
+  y = df[row_,]$tpr
+  sd = as.factor(df[row_,]$sd)
+  reps = as.factor(df[row_,]$reps)
+  conditions = as.factor(df[row_,]$conditions)
+  point = tibble(x = x, y = y, fpr = fpr, sd = sd, reps = reps, conditions = conditions, model = "msqrob")
+  }
+  point_data_4 = rbind(point_data_4, point)
+}
+```
+
+```{r, fig.height=10, fig.width=11}
+msqrob_simulation2$reps = as.factor(msqrob_simulation2$reps)
+
+msqrob_simulation2 %>%
+      ggplot(aes(x = fdp, y = tpr, color = reps)) +
+      geom_path(size=0.8) +
+      geom_vline(xintercept=0.05,lty=2) +
+      geom_point(data = point_data_4, aes(x, y, color = reps), size=2) +
+      facet_grid(vars(conditions), vars(sd), labeller = label_both) +
+      theme(axis.text=element_text(size=11),
+      axis.title=element_text(size=15),
+      strip.text.x = element_text(size = 18),
+      strip.text.y = element_text(size = 18),
+      legend.title = element_text(size=14), 
+      legend.text = element_text(size=11))
+```
+
+ROC curve
+
+```{r, fig.height=10, fig.width=11}
+msqrob_simulation2$reps = as.factor(msqrob_simulation2$reps)
+
+msqrob_simulation2 %>%
+      ggplot(aes(x = fpr, y = tpr, color = reps)) +
+      geom_path(size=0.8) +
+      geom_vline(xintercept=0.05,lty=2) +
+      geom_point(data = point_data_4, aes(fpr, y, color = reps), size=2) +
+      facet_grid(vars(conditions), vars(sd), labeller = label_both) +
+      theme(axis.text=element_text(size=11),
+      axis.title=element_text(size=15),
+      strip.text.x = element_text(size = 18),
+      strip.text.y = element_text(size = 18),
+      legend.title = element_text(size=14), 
+      legend.text = element_text(size=11))
+```
+
+```{r}
+j <- 1
+for (i in unique(msqrob_simulation2$dataset)){
+  df <- msqrob_simulation2[msqrob_simulation2$dataset==i,]
+  p <- df %>% ggplot(aes(x = fdp, y = tpr)) +
+      geom_path() +
+      geom_vline(xintercept=0.01,lty=2) +
+      geom_point(data = df[sum(df$adjPval < 0.05, na.rm = TRUE), ],
+             aes(x = fdp, y = tpr), cex = 2, color = "blue", size = 3) +
+          ggtitle(paste("sd:", as.character(param_combos[j, 1]), "reps:", 
+                    as.character(param_combos[j,2]), "conditions:", 
+                    as.character(param_combos[j,3])))
+  print(p)
+  j <- j + 1
+}
+```
+
+### together
+
+#### Simulation 1
+
+```{r}
+model_df <- model_df %>%
+              dplyr::rename(logFC = log2FC,
+                     se = SE,
+                     t = Tvalue,
+                     df = DF,
+                     pval = pvalue,
+                     adjPval = adj.pvalue) %>% 
+              mutate(dataset = paste(sd, reps, conditions, sep = "_")) %>%
+              select(-GlobalProtein)
+
+model_df_together <- rbind(model_df, msqrob_simulation1)
+```
+
+```{r}
+point_data_together <- rbind(point_data, point_data_3)
+```
+
+```{r}
+get_point_data <- function(df, adjpval, alpha, model){
+  row_ = sum(df[[adjpval]] < alpha, na.rm =T)
+  if (row_ == 0){
+    point = tibble(x = 0, y = 0, fpr = 0,
+                   sd = as.factor(df[1,]$sd), 
+                   reps = as.factor(df[1,]$reps), 
+                   conditions = as.factor(df[1,]$conditions),
+                   alpha = alpha,
+                   model = model)
+  }
+  else {
+    point= tibble(x = df[row_,]$fdp,
+                  fpr = df[row_,]$fpr,
+                  y = df[row_,]$tpr,
+                  sd = as.factor(df[row_,]$sd),
+                  reps = as.factor(df[row_,]$reps),
+                  conditions = as.factor(df[row_,]$conditions),
+                  alpha = alpha,
+                  model = model)
+  }
+  return(point)
+}
+
+```
+
+```{r}
+point_data_sim1_msstats <- lapply(seq(1:24), function(x) {
+  p1 = get_point_data(adjusted_models_sim1[[x]], "adj.pvalue", 0.01, "MSstats")
+  p5 = get_point_data(adjusted_models_sim1[[x]], "adj.pvalue", 0.05, "MSstats")
+  p10 = get_point_data(adjusted_models_sim1[[x]], "adj.pvalue", 0.1, "MSstats")
+  return(rbind(p1, p5, p10))
+})
+point_data_sim1_msstats = do.call("rbind", point_data_sim1_msstats)
+
+point_data_sim1_msqrob <- lapply(unique(msqrob_simulation1$dataset), function(x) {
+  p1 = get_point_data(msqrob_simulation1[msqrob_simulation1$dataset==x,], "adjPval", 0.01, "msqrob")
+  p5 = get_point_data(msqrob_simulation1[msqrob_simulation1$dataset==x,], "adjPval", 0.05, "msqrob")
+  p10 = get_point_data(msqrob_simulation1[msqrob_simulation1$dataset==x,], "adjPval", 0.1, "msqrob")
+  return(rbind(p1, p5, p10))
+})
+point_data_sim1_msqrob = do.call("rbind", point_data_sim1_msqrob)
+point_data_sim1_together = rbind(point_data_sim1_msstats, point_data_sim1_msqrob)
+point_data_sim1_together$alpha <- as.factor(point_data_sim1_together$alpha)
+```
+
+
+```{r, fig.height=10, fig.width=13}
+model_df_together %>%
+      ggplot(aes(x = fdp, y = tpr, color = reps)) +
+      geom_path(aes(linetype = model), size = 1) +
+      geom_vline(xintercept=0.05,lty=2) +
+      geom_point(data = point_data_sim1_together, aes(x = x, y = y, shape = alpha, fill = reps), size = 1.5, color = "black") +
+      facet_grid(vars(sd), vars(conditions), labeller = label_both)
+```
+
+Same plots, but more aesthetically pleasing (according to me, anyway)
+
+```{r, fig.height=10, fig.width=11}
+model_df_together %>%
+      ggplot(aes(x = fdp, y = tpr, color = reps)) +
+      geom_path(aes(linetype = model, size = model)) +
+      scale_size_manual(values = c(msqrob = 1.15, MSstats = 0.8)) +
+      scale_linetype_manual(values = c(msqrob = "solid", MSstats = "dotted")) +
+      geom_vline(xintercept=0.05,lty=2) +
+      geom_point(data = point_data_together, 
+                 aes(x = x, y = y, shape = model, color = reps), size = 2.5) +
+      facet_grid(vars(conditions), vars(sd), labeller = label_both) +
+      theme(axis.text=element_text(size=11),
+      axis.title=element_text(size=15),
+      strip.text.x = element_text(size = 18),
+      strip.text.y = element_text(size = 18),
+      legend.title = element_text(size=14), 
+      legend.text = element_text(size=11))
+```
+
+ROC curves
+
+```{r, fig.height=10, fig.width=11}
+model_df_together %>%
+      ggplot(aes(x = fpr, y = tpr, color = reps)) +
+      geom_path(aes(linetype = model, size = model)) +
+      scale_size_manual(values = c(msqrob = 1.1, MSstats = 1.1)) +
+      scale_linetype_manual(values = c(msqrob = "solid", MSstats = "dotted")) +
+      geom_vline(xintercept=0.05,lty=2) +
+      #geom_point(data = point_data_together, aes(x = fpr, y = y, shape = model), size = 2, color = "gray30") +
+      facet_grid(vars(conditions), vars(sd), labeller = label_both) +
+      theme(axis.text=element_text(size=11),
+      axis.title=element_text(size=15),
+      strip.text.x = element_text(size = 18),
+      strip.text.y = element_text(size = 18),
+      legend.title = element_text(size=14), 
+      legend.text = element_text(size=11))
+```
+
+#### Simulation 2
+
+```{r}
+model_df2 <- model_df2 %>%
+              dplyr::rename(logFC = log2FC,
+                     se = SE,
+                     t = Tvalue,
+                     df = DF,
+                     pval = pvalue,
+                     adjPval = adj.pvalue) %>% 
+              mutate(dataset = paste(sd, reps, conditions, sep = "_")) %>%
+              select(-GlobalProtein)
+
+model_df2_together <- rbind(model_df2, msqrob_simulation2)
+```
+
+```{r}
+point_data_together_2 <- rbind(point_data_2, point_data_4)
+```
+
+
+```{r}
+point_data_sim2_msstats <- lapply(seq(1:24), function(x) {
+  p1 = get_point_data(adjusted_models_sim2[[x]], "adj.pvalue", 0.01, "MSstats")
+  p5 = get_point_data(adjusted_models_sim2[[x]], "adj.pvalue", 0.05, "MSstats")
+  p10 = get_point_data(adjusted_models_sim2[[x]], "adj.pvalue", 0.1, "MSstats")
+  return(rbind(p1, p5, p10))
+})
+point_data_sim2_msstats = do.call("rbind", point_data_sim2_msstats)
+
+point_data_sim2_msqrob <- lapply(unique(msqrob_simulation2$dataset), function(x) {
+  p1 = get_point_data(msqrob_simulation2[msqrob_simulation2$dataset==x,], "adjPval", 0.01, "msqrob")
+  p5 = get_point_data(msqrob_simulation2[msqrob_simulation2$dataset==x,], "adjPval", 0.05, "msqrob")
+  p10 = get_point_data(msqrob_simulation2[msqrob_simulation2$dataset==x,], "adjPval", 0.1, "msqrob")
+  return(rbind(p1, p5, p10))
+})
+point_data_sim2_msqrob = do.call("rbind", point_data_sim2_msqrob)
+point_data_sim2_together = rbind(point_data_sim2_msstats, point_data_sim2_msqrob)
+point_data_sim2_together$alpha <- as.factor(point_data_sim2_together$alpha)
+```
+
+
+```{r, fig.height=10, fig.width=13}
+model_df2_together %>%
+      ggplot(aes(x = fdp, y = tpr, color = reps)) +
+      geom_path(aes(linetype = model), size = 1) +
+      geom_vline(xintercept=0.05,lty=2) +
+      geom_point(data = point_data_sim2_together, aes(x = x, y = y, shape = alpha, fill = reps), size = 1.5, color = "black") +
+      facet_grid(vars(sd), vars(conditions), labeller = label_both)
+```
+
+
+```{r, fig.height=10, fig.width=11}
+model_df2_together %>%
+      ggplot(aes(x = fdp, y = tpr, color = reps)) +
+      geom_path(aes(linetype = model, size = model)) +
+      scale_size_manual(values = c(msqrob = 1.15, MSstats = 0.8)) +
+      scale_linetype_manual(values = c(msqrob = "solid", MSstats = "dotted")) +
+      geom_vline(xintercept=0.05,lty=2) +
+      geom_point(data = point_data_together_2, aes(x = x, y = y, shape = model, color = reps), size = 2.5) +
+      facet_grid(vars(conditions), vars(sd), labeller = label_both) +
+      theme(axis.text=element_text(size=11),
+      axis.title=element_text(size=15),
+      strip.text.x = element_text(size = 18),
+      strip.text.y = element_text(size = 18),
+      legend.title = element_text(size=14), 
+      legend.text = element_text(size=11))
+```
+
+ROC curves
+
+```{r, fig.height=10, fig.width=11}
+model_df2_together %>%
+      ggplot(aes(x = fpr, y = tpr, color = reps)) +
+      geom_path(aes(linetype = model, size = model)) +
+      scale_size_manual(values = c(msqrob = 1.1, MSstats = 1.1)) +
+      scale_linetype_manual(values = c(msqrob = "solid", MSstats = "dotted")) +
+      geom_vline(xintercept=0.05,lty=2) +
+      #geom_point(data = point_data_together_2, aes(x = fpr, y = y, shape = model), size = 2, color = "gray35") +
+      facet_grid(vars(conditions), vars(sd), labeller = label_both) +
+      theme(axis.text=element_text(size=11),
+      axis.title=element_text(size=15),
+      strip.text.x = element_text(size = 18),
+      strip.text.y = element_text(size = 18),
+      legend.title = element_text(size=14), 
+      legend.text = element_text(size=11))
+```
+
+
+
+## p value distributions
+
+### msstats
+
+#### Simulation 1
+
+```{r}
+pvals <- c()
+for (i in 1:length(adjusted_models_sim1)){
+  pvals <- c(pvals, df %>%
+    filter(change == F) %>%
+    pull(pval))
+
+}
+hist(pvals)
+```
+
+```{r}
+pvals <- c()
+for (i in 1:length(adjusted_models_sim1)){
+  pvals <- c(pvals, df %>%
+    filter(change == T) %>%
+    pull(pval))
+
+}
+hist(pvals)
+```
+
+
+### msqrob
+
+#### Simulation 1
+
+```{r}
+pvals <- c()
+for (i in unique(msqrob_simulation1$dataset)){
+  df <- msqrob_simulation1[msqrob_simulation1$dataset==i,]
+  pvals <- c(pvals, df %>%
+    filter(grepl(pattern = "NoChange", Protein)) %>%
+      pull(pval))
+}
+
+hist(pvals)
+```
+
+```{r}
+pvals <- c()
+for (i in unique(msqrob_simulation1$dataset)){
+  df <- msqrob_simulation1[msqrob_simulation1$dataset==i,]
+  pvals <- c(pvals, df %>%
+    filter(!grepl(pattern = "NoChange", Protein)) %>%
+      pull(pval))
+}
+
+hist(pvals)
+```
+
+
+#### Simulation 2
+
+```{r}
+pvals <- c()
+for (i in unique(msqrob_simulation2$dataset)){
+  df <- msqrob_simulation2[msqrob_simulation2$dataset==i,]
+  pvals <- c(pvals, df %>%
+    filter(grepl(pattern = "NoChange", Protein)) %>%
+      pull(pval))
+}
+
+hist(pvals)
+```
+
+```{r}
+pvals <- c()
+for (i in unique(msqrob_simulation2$dataset)){
+  df <- msqrob_simulation2[msqrob_simulation2$dataset==i,]
+  pvals <- c(pvals, df %>%
+    filter(!grepl(pattern = "NoChange", Protein)) %>%
+      pull(pval))
+}
+
+hist(pvals)
+```
+
+
+
+### Versus when starting from summarised data
+
+```{r}
+load("C:/Users/Nina/OneDrive - UGent/Documenten/Doctoraat/msqrobPTM/Datasets MSStats/simulation_data/signtable_simulation1_msqrob_comparison1_startfromsummary.rda")
+sign_table11 <- sign_table
+load("C:/Users/Nina/OneDrive - UGent/Documenten/Doctoraat/msqrobPTM/Datasets MSStats/simulation_data/signtable_simulation1_msqrob_comparison2_startfromsummary.rda")
+sign_table12 <- sign_table
+load("C:/Users/Nina/OneDrive - UGent/Documenten/Doctoraat/msqrobPTM/Datasets MSStats/simulation_data/signtable_simulation1_msqrob_comparison3_startfromsummary.rda")
+sign_table13 <- sign_table
+
+load("C:/Users/Nina/OneDrive - UGent/Documenten/Doctoraat/msqrobPTM/Datasets MSStats/simulation_data/signtable_simulation2_msqrob_comparison1_startfromsummary.rda")
+sign_table21 <- sign_table
+load("C:/Users/Nina/OneDrive - UGent/Documenten/Doctoraat/msqrobPTM/Datasets MSStats/simulation_data/signtable_simulation2_msqrob_comparison2_startfromsummary.rda")
+sign_table22 <- sign_table
+load("C:/Users/Nina/OneDrive - UGent/Documenten/Doctoraat/msqrobPTM/Datasets MSStats/simulation_data/signtable_simulation2_msqrob_comparison3_startfromsummary.rda")
+sign_table23 <- sign_table
+```
+
+```{r}
+msqrob_simulation1_summary <- rbind(sign_table11, sign_table12, sign_table13)
+msqrob_simulation2_summary <- rbind(sign_table21, sign_table22, sign_table23)
+```
+
+#### Simulation 1
+
+```{r}
+point_data_7 <- tibble()
+for (i in unique(msqrob_simulation1_summary$dataset)){
+  df <- msqrob_simulation1_summary[msqrob_simulation1_summary$dataset==i,]
+  row_ = sum(df$adjPval < 0.05, na.rm =T)
+  if (row_ == 0){
+    point = tibble(x = 0, y = 0, fpr = 0,
+                   sd = as.factor(df[1,]$sd), 
+                   reps = as.factor(df[1,]$reps), 
+                   conditions = as.factor(df[1,]$conditions))
+  }
+  else {
+  x = df[row_,]$fdp
+  fpr = df[row_,]$fpr
+  y = df[row_,]$tpr
+  sd = as.factor(df[row_,]$sd)
+  reps = as.factor(df[row_,]$reps)
+  conditions = as.factor(df[row_,]$conditions)
+  point = tibble(x = x, y = y, fpr = fpr, sd = sd, reps = reps, conditions = conditions, model = "msqrob_summaryStart")
+  }
+  point_data_7 = rbind(point_data_7, point)
+}
+```
+
+```{r}
+msqrob_simulation1_summary <- 
+  msqrob_simulation1_summary %>%     
+  rownames_to_column("Protein") %>%
+  mutate(change = !grepl("NoChange", Protein),
+         dataset = paste(sd, reps, conditions, sep = "_"),
+         model = "msqrob_summaryStart"
+)
+```
+
+```{r}
+msqrob_simulation1_summary$tpr <- 1000
+msqrob_simulation1_summary$fdp <- 1000
+msqrob_simulation1_summary$fpr <- 1000
+for (i in unique(msqrob_simulation1_summary$dataset)){
+  msqrob_simulation1_summary[msqrob_simulation1_summary$dataset==i,] <- 
+    tprFdp(msqrob_simulation1_summary[msqrob_simulation1_summary$dataset==i,], "pval", "change")
+}
+```
+
+
+```{r}
+simulation1_together <- rbind(msqrob_simulation1_summary, msqrob_simulation1)
+```
+
+```{r}
+point_data_together <- rbind(point_data_3, point_data_7)
+```
+
+
+```{r, fig.height=10, fig.width=13}
+simulation1_together %>%
+      ggplot(aes(x = fdp, y = tpr, color = reps)) +
+      geom_path(aes(linetype = model), size = 1) +
+      geom_vline(xintercept=0.05,lty=2) +
+      geom_point(data = point_data_together, aes(x = x, y = y, shape = model), size = 1.5, color = "black") +
+      facet_grid(vars(sd), vars(conditions), labeller = label_both)
+```
+
+```{r, fig.height=10, fig.width=11}
+simulation1_together %>%
+      ggplot(aes(x = fpr, y = tpr, color = reps)) +
+      geom_path(aes(linetype = model, size = model)) +
+      scale_size_manual(values = c(msqrob = 1.1, msqrob_summaryStart = 1.1)) +
+      scale_linetype_manual(values = c(msqrob = "solid", msqrob_summaryStart = "dotted")) +
+      geom_vline(xintercept=0.05,lty=2) +
+      #geom_point(data = point_data_together_2, aes(x = fpr, y = y, shape = model), size = 2, color = "gray35") +
+      facet_grid(vars(conditions), vars(sd), labeller = label_both) +
+      theme(axis.text=element_text(size=11),
+      axis.title=element_text(size=15),
+      strip.text.x = element_text(size = 18),
+      strip.text.y = element_text(size = 18),
+      legend.title = element_text(size=14), 
+      legend.text = element_text(size=11))
+```
+
+
+
+#### Simulation 2
+
+```{r}
+point_data_8 <- tibble()
+for (i in unique(msqrob_simulation2_summary$dataset)){
+  df <- msqrob_simulation2_summary[msqrob_simulation2_summary$dataset==i,]
+  row_ = sum(df$adjPval < 0.05, na.rm =T)
+  if (row_ == 0){
+    point = tibble(x = 0, y = 0, fpr = 0,
+                   sd = as.factor(df[1,]$sd), 
+                   reps = as.factor(df[1,]$reps), 
+                   conditions = as.factor(df[1,]$conditions))
+  }
+  else {
+  x = df[row_,]$fdp
+  fpr = df[row_,]$fpr
+  y = df[row_,]$tpr
+  sd = as.factor(df[row_,]$sd)
+  reps = as.factor(df[row_,]$reps)
+  conditions = as.factor(df[row_,]$conditions)
+  point = tibble(x = x, y = y, fpr = fpr, sd = sd, reps = reps, conditions = conditions, model = "msqrob_summaryStart")
+  }
+  point_data_8 = rbind(point_data_8, point)
+}
+```
+
+```{r}
+msqrob_simulation2_summary <- 
+  msqrob_simulation2_summary %>%     
+  rownames_to_column("Protein") %>%
+  mutate(change = !grepl("NoChange", Protein),
+         dataset = paste(sd, reps, conditions, sep = "_"),
+         model = "msqrob_summaryStart"
+)
+```
+
+```{r}
+msqrob_simulation2_summary$tpr <- 1000
+msqrob_simulation2_summary$fdp <- 1000
+msqrob_simulation2_summary$fpr <- 1000
+for (i in unique(msqrob_simulation2_summary$dataset)){
+  msqrob_simulation2_summary[msqrob_simulation2_summary$dataset==i,] <- 
+    tprFdp(msqrob_simulation2_summary[msqrob_simulation2_summary$dataset==i,], "pval", "change")
+}
+```
+
+
+```{r}
+simulation2_together <- rbind(msqrob_simulation2_summary, msqrob_simulation2)
+```
+
+```{r}
+point_data_together <- rbind(point_data_4, point_data_8)
+```
+
+
+```{r, fig.height=10, fig.width=13}
+simulation2_together %>%
+      ggplot(aes(x = fdp, y = tpr, color = reps)) +
+      geom_path(aes(linetype = model), size = 1) +
+      geom_vline(xintercept=0.05,lty=2) +
+      geom_point(data = point_data_together, aes(x = x, y = y, shape = model), size = 1.5, color = "black") +
+      facet_grid(vars(sd), vars(conditions), labeller = label_both)
+```
+
+```{r, fig.height=10, fig.width=11}
+simulation2_together %>%
+      ggplot(aes(x = fpr, y = tpr, color = reps)) +
+      geom_path(aes(linetype = model, size = model)) +
+      scale_size_manual(values = c(msqrob = 1.1, msqrob_summaryStart = 1.1)) +
+      scale_linetype_manual(values = c(msqrob = "solid", msqrob_summaryStart = "dotted")) +
+      geom_vline(xintercept=0.05,lty=2) +
+      #geom_point(data = point_data_together_2, aes(x = fpr, y = y, shape = model), size = 2, color = "gray35") +
+      facet_grid(vars(conditions), vars(sd), labeller = label_both) +
+      theme(axis.text=element_text(size=11),
+      axis.title=element_text(size=15),
+      strip.text.x = element_text(size = 18),
+      strip.text.y = element_text(size = 18),
+      legend.title = element_text(size=14), 
+      legend.text = element_text(size=11))
+```
