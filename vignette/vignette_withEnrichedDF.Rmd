@@ -46,8 +46,9 @@ Any output of a search engine/quantification algorithm that contains the MS2 int
 
 ```{r}
 df <- read.csv("evidence.txt",header=TRUE)
+#filter out internal standard proteins that were present in this dataset
 df <- df %>% filter(!grepl("Sigma", df$Proteins))
-#filter out phospho sites with less than 75% probability
+#filter out phospho sites with less than 75% probability (optional)
 filter_rows <- sapply(df$Phospho..STY..Probabilities, function(x){
   if (!x==""){
     prob <- str_extract_all(x,  "(?<=\\().+?(?=\\))")[[1]]
@@ -58,20 +59,20 @@ filter_rows <- unique(unlist(filter_rows))
 nrow(df)
 df <- df[-filter_rows,]
 nrow(df)
-#Now get format into wide format
-                                    #moet hier bijvoorbeeld ook nog charge bij?
+#transorm dataframe into wide format for input into QFeatures
+#We need at least information about the pepform sequence, modifications, parent protein and intensity values
 df_wide <- pivot_wider(df, id_cols = c("Sequence", "Modifications", "Modified.sequence", "Proteins", "Leading.proteins",
                                         "Reverse", "Potential.contaminant", "Protein.group.IDs", "Leading.razor.protein"),
-                                                                          #Is dat hier de beste manier om met 
-                                                                          #gedupliceerde features om te gaan?
                        names_from = "Raw.file", names_prefix = "Intensity_", values_from = "Intensity", values_fn = max)
 ```
 
 ```{r}
+#get columns which contain the intensity values
 ecols <- grep("Intensity",colnames(df_wide))
 #order dataframe by protein, for the normalisation step
 df_wide = df_wide[order(df_wide$Leading.razor.protein),]
 #We work with the QFeatures infrastructure, so convert dataset into a QFeatures object
+#ecols = intensity columns
 pe <- readQFeatures(df_wide,ecol= ecols,name="peptidoformRaw", fnames = "Modified.sequence")
 ```
 
@@ -104,10 +105,13 @@ limma::plotMDS(df_wide[,ecols])
 
 ## Protein dataset
 
+Here we also have a counterpart non-enriched dataset
+This dataset also needs to go through the data read-in and preprocessing steps
 
 ```{r}
 df_prot <- read.csv("evidence_non_enriched.txt",header=TRUE)
-#The pool samples can be ignored (those were just used for QC purposes)
+#The pool samples can be ignored (those were just used for QC purposes),
+#as wel as the internal standard proteins
 df_prot <- df_prot %>% filter(!grepl("Pool", df_prot$Experiment),
                     !grepl("Sigma", df_prot$Proteins))
 
@@ -125,7 +129,7 @@ limma::plotMDS(df_prot_wide[,ecols])
 ```{r}
 #order dataframe by protein, for the normalisation step
 df_prot_wide = df_prot_wide[order(df_prot_wide$Leading.razor.protein),]
-prot <- readQFeatures(df_prot_wide,ecol= ecols,name="proteinRaw",fnames = "Modified.sequence")
+prot <- readQFeatures(df_prot_wide,ecol= ecols,name="proteinRaw")
 ```
 
 ### Experimental Layout
@@ -153,10 +157,14 @@ colData(prot)
 
 # Preprocessing
 
+Steps undertaken here: 
 Logtransformation
 Throw out peptides that have less than 2 measured intensity values
 Zero intensity is missing data and should be represented with NA instead of 0
 Throw out decoys and contaminants
+Center median normalisation
+
+This can be adapted according to your dataset needs
 
 ## PTM dataset
 
@@ -212,6 +220,7 @@ prot <- aggregateFeatures(prot,
 
 For the normalisation step, both ptm and protein dataset need to same column names for the abundance columns.
 If this is not already the case, corresponding samples need to be given the same name.
+The following code block will give everything the same name, but ideally, this should already be the case.
  
 ```{r}
 #get current protein colnames without "Intensity_"
@@ -262,7 +271,7 @@ rowData(pe[["pepformRel"]])$msqrobModels[[3]] %>%
                   getCoef
 ```
 
-conditionA is the reference class for condition and subset x is the reference class for subset So the mean log2 expression for samples from condition A and subset x is ‘(Intercept)'. The mean log2 expression for subset x samples from condition B is’(Intercept)+conditionB’. Hence, the average log2 fold change between condition A and condition B for samples from subset x is modeled using the parameter ‘conditionB’. Thus, we assess the contrast ‘conditionB=0’ with our statistical test.
+conditionA is the reference class for condition and subset x is the reference class for subset, so the mean log2 expression for samples from condition A and subset x is ‘(Intercept)'. The mean log2 expression for subset x samples from condition B is’(Intercept)+conditionB’. Hence, the average log2 fold change between condition A and condition B for samples from subset x is modeled using the parameter ‘conditionB’. Thus, we assess the contrast ‘conditionB=0’ with our statistical test.
 The average log2 fold change between conditionA and conditionB for samples from subset y is modeled using the parameter ‘conditionB + conditionB:subsety’. Thus, we assess the contrast ‘conditionB + conditionB:subsety=0’ with our statistical test
 The difference between abovementioned contrasts is modeled using the interaction parameter: conditionB:subsety
 We can also assess an average contrast to see the average difference between condition A and B across subsets: conditionB + 0.5 * conditionB:subsety = 0
@@ -342,6 +351,7 @@ knitr::kable(tables)
 We here find all significant peptidoforms per contrast in a table.
 The peptidoforms are sorted based on the adjusted pvalues
 We can save these tables to our computer.
+In this case, we find no significant peptidoforms for this dataset
 
 ```{r eval=FALSE, include=FALSE}
 tables_toCsv <- do.call("rbind", tables)
@@ -355,7 +365,7 @@ write.csv(tables_toCsv, file = "significance_tables_peptidoform.csv")
 
 In this step we will summarise the peptidoform level data to ptm level data.
 
-### Get location of modification in protein
+### Get location of modification in protein (optional)
 
 For this we need the location information of each modification in the protein.
 When this information is not provided, but we do have the fasta file, we can add this information ourselves.
@@ -417,6 +427,8 @@ rowData(pe[["pepformRel"]])$mod <- sapply(rownames(rowData(pe[["pepformRel"]])),
 ### Get ptm level intensity matrix
 
 In our case, a ptm is a unique protein - modification + location combination.
+This could already be provided in the input file, but this is not the case here.
+The following code block will add this information
 
 ```{r}
 #Add ptm variable = protein + modification 
@@ -424,9 +436,11 @@ In our case, a ptm is a unique protein - modification + location combination.
 rowData(pe[["pepformRel"]])$ptm <- ifelse(rowData(pe[["pepformRel"]])$mod != "",
                                           #if there is mod, add ptm
                                                mapply(function(x, y) {
+#here, the modifications are separated in the modifications column with a comma
 vector2 <- strsplit(y, ", ")[[1]]
 result <- lapply(vector2, function(i) paste(x, i, sep = "-"))
 final_result <- paste(unlist(result), collapse = ", ")
+#input = protein column (x) and column that contains the modifications (y)
 }, rowData(pe[["pepformRel"]])$Leading.razor.protein, rowData(pe[["pepformRel"]])$mod), 
 #else add empty string
                                                "")
@@ -447,6 +461,8 @@ For every unique ptm, we take all its associated peptidoforms and aggregate all 
 ptm_x_assay <- sapply(seq(1:length(ptms)), function(i){ 
   x <- ptms[i]
   #Get current protein and mod from ptm
+  #the separator here is the one chosen above to paste the ptms to each other, 
+  #or the one used in the input file in the ptm column
   prot <- str_split(x, "-", 2)[[1]][1]
   current_ptm <- str_split(x, "-", 2)[[1]][2]
   #filter on that protein and on that mod to obtain all peptidoforms that correspond to the ptm
@@ -455,10 +471,9 @@ ptm_x_assay <- sapply(seq(1:length(ptms)), function(i){
   #Get intensity values of those peptidoforms
   y <- assay(ptm_sub)
   #And summarise them to 1 row of intensity values: 1 value per sample for that ptm
-  if (any(is.finite(y))){
-  ptm_y <- MsCoreUtils::robustSummary(y)
-  }
-  else {ptm_y <- rep(NA, ncol(y))}
+  ptm_y <- try(MsCoreUtils::robustSummary(y), silent = T)
+  if (is(ptm_y, "try-error")){
+    ptm_y <- rep(NA, ncol(y))}
   ptm_y
 })
 #Then we get the intensity assay on ptm level
@@ -572,5 +587,281 @@ We can save these tables onto our computer.
 tables_toCsv <- do.call("rbind", tables)
 tables_toCsv <- tables_toCsv %>% as.data.frame %>% rownames_to_column("contrast")
 write.csv(tables_toCsv, file = "significance_tables_FUS_GP_PTM.csv")
+```
+
+## Lineplots
+
+
+#### PTM - level
+
+```{r}
+rownames(assay(prot[["proteinLog"]], withDimnames = F)) <- rowData(prot[["proteinLog"]])$Leading.razor.protein
+rowData(pe[["peptidoformLog"]])$modified_sequence <- gsub("_", "", rowData(pe[["peptidoformLog"]])$Modified.sequence)
+
+rowData(pe[["peptidoformLog"]])$mod <- sapply(rownames(rowData(pe[["peptidoformLog"]])), function(x){
+    get_ptm_location(x, rowData(pe[["peptidoformLog"]]), parsed_fasta)
+}, USE.NAMES = F)
+```
+
+
+```{r, fig.width=18, fig.height=10}
+#choose ptms of which you want to make lineplots 
+ptm_list1 <- rowData(pe[["ptmRel"]])[["conditionB"]] %>% as.data.frame %>%
+  arrange(adjPval) %>% head(10) %>% rownames
+
+plots <- list()
+
+for (i in ptm_list1){
+  #split is the separator between protein and mod in ptm column again
+prot_ = str_split(i, "-")[[1]][1]
+site_ = str_split_fixed(i, "-", 2)[,2]
+
+#Protein family sequence abundance
+protein <- assay(prot[["proteinLog"]], withDimnames = F)[prot_,] %>% as.data.frame() 
+colnames(protein) <- "LogIntensities"
+protein <- protein %>%
+  rownames_to_column("run") %>%
+  mutate(sequence = prot_,
+         FeatureType = "Protein",
+         condition = colData(prot)[run,]$condition, 
+         subset = colData(prot)[run,]$subset) %>%
+         arrange(condition, subset)
+
+#Peptidoform abundance
+pepforms <- rowData(pe[["peptidoformLog"]]) %>% as.data.frame() %>% 
+    filter(grepl(site_, mod, fixed=T),
+           Leading.razor.protein == prot_) %>% rownames
+pepform <- assay(pe[["peptidoformLog"]])[pepforms,] %>% as.data.frame()
+if (length(pepforms)==0) {next}
+if (length(pepforms)>1){
+  pepform <- pepform %>% rownames_to_column("sequence") %>% 
+    pivot_longer(cols = colnames(pepform), names_to = "run",
+                 values_to = "LogIntensities") 
+} else{
+    colnames(pepform) <- "LogIntensities"
+    pepform <- pepform %>% rownames_to_column("run") %>%
+               mutate(sequence = pepforms)
+  }
+  pepform <- pepform %>%  mutate(subset = colData(pe)[run,]$subset, 
+         condition = colData(pe)[run,]$condition,
+         FeatureType = "Peptidoform") %>%
+         arrange(condition, subset)
+
+
+
+#Peptidoform abundance - normalised
+pepforms <- rowData(pe[["pepformRel"]]) %>% as.data.frame() %>% 
+    filter(grepl(i, ptm, fixed=T)) %>% rownames
+pepform_norm <- assay(pe[["pepformRel"]])[pepforms,] %>% as.data.frame()
+if (length(pepforms)>1){
+  pepform_norm <- pepform_norm %>% rownames_to_column("sequence") %>% 
+    pivot_longer(cols = colnames(pepform_norm), names_to = "run",
+                 values_to = "LogIntensities") 
+} else{
+    colnames(pepform_norm) <- "LogIntensities"
+    pepform_norm <- pepform_norm %>% rownames_to_column("run") %>%
+               mutate(sequence = pepforms)
+}
+    pepform_norm <- pepform_norm %>%  mutate(
+         condition = colData(pe)[run,]$condition, 
+         subset = colData(pe)[run,]$subset,
+         FeatureType = "Peptidoform - normalised",
+         sequence = paste(sequence, "norm")) %>%
+         arrange(condition, subset)
+
+
+#Normalised PTM abundance
+ptm_df <- assay(pe[["ptmRel"]])[i,] %>% as.data.frame()
+colnames(ptm_df) <- "LogIntensities"
+ptm_df <- ptm_df %>%
+  rownames_to_column("run") %>%
+  mutate(sequence = i,
+         FeatureType = "PTM - normalised",
+         condition = colData(pe)[run,]$condition, 
+         subset = colData(pe)[run,]$subset) %>%
+         arrange(condition, subset)
+         
+
+#PTM estimated
+sequence <- paste(rep(i, nrow(ptm_df)), "estimate")
+ptm_estimate <- tibble(sequence)
+ptm_estimate$run <- ptm_df$run
+protein$run <- ptm_df$run
+ptm_estimate$subset <- ptm_df$subset
+ptm_estimate$condition <- ptm_df$condition
+ptm_estimate$FeatureType <- "PTM_estimated"
+ptm_estimate$LogIntensities <- NA
+
+fixeffects <- rowData(pe[["ptmRel"]])$msqrobModels[[i]] %>% getCoef
+ptm_estimate[ptm_estimate$condition=="A"&(ptm_estimate$subset=="x"),]$LogIntensities <- 
+                                                    fixeffects[["(Intercept)"]]
+ptm_estimate[ptm_estimate$condition=="A"&(ptm_estimate$subset=="y"),]$LogIntensities <- 
+   fixeffects[["(Intercept)"]] + fixeffects[["subsety"]]
+ptm_estimate[ptm_estimate$condition=="B"&(ptm_estimate$subset=="x"),]$LogIntensities <- 
+   fixeffects[["(Intercept)"]] + fixeffects[["conditionB"]]
+ptm_estimate[ptm_estimate$condition=="B"&(ptm_estimate$subset=="y"),]$LogIntensities <- 
+   fixeffects[["(Intercept)"]] + fixeffects[["conditionB"]] + fixeffects[["conditionB:subsety"]] + fixeffects[["subsety"]]
+
+ptm_estimate <- ptm_estimate %>% arrange(condition, subset)
+
+plot_df <- rbindlist(list(protein, pepform, pepform_norm, ptm_df, ptm_estimate), fill = TRUE)
+plot_df$run <- forcats::fct_inorder(plot_df$run)
+plot_points <- plot_df %>% filter(FeatureType != "PTM_estimated")
+
+#plot_df[plot_df$FeatureType == 'Model'][['FeatureType']] <- "PTM Summarized"
+#plot_df[plot_df$FeatureType == 'Peptide'][['FeatureType']] <- "PTM Feature"
+
+p1 <- plot_df %>% ggplot() +
+  geom_line(aes(x = run, y = LogIntensities , group = sequence, color = FeatureType, alpha = FeatureType), size =2) +
+  geom_point(data = plot_points, aes(x = run, y = LogIntensities , group = sequence, color = FeatureType, alpha = FeatureType), size = 5) +
+  geom_vline(data=data.frame(x = c(5.25, 9.5, 14.5)),
+             aes(xintercept=as.numeric(x)), linetype = "dashed") +
+  scale_colour_manual(values = c("Peptidoform - normalised" = "gray72", 
+                                 "Protein" = "dodgerblue2", "PTM - normalised" = "seagreen3", 
+                                 "PTM_estimated" = "palevioletred2", "Peptidoform" = "gray44"))  +
+  scale_alpha_manual(values = c("Peptidoform - normalised" = 0.3, 
+                                 "Protein" = 1, "PTM - normalised" = 1, 
+                                 "PTM_estimated" = 1, "Peptidoform" = 0.3)) +
+  #scale_size_manual(values = c(1, 2)) +
+  labs(title = i, x = "BioReplicate", y = "LogIntensity") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, hjust=1, size = 16),
+        axis.text.y = element_text(size = 16),
+        legend.text=element_text(size=10),
+        axis.title.y = element_text(size = 22),
+        axis.title.x = element_text(size = 22),
+        title = element_text(size = 22),
+        strip.text = element_text(size = 16),
+        legend.title =  element_blank(),
+        legend.direction = "horizontal",
+        legend.position = c(0.5, 0.05)) +
+  annotate("text", x = 12.5, y = 29.5, label = "B", size = 8) +
+  annotate("text", x = 5, y = 29.5, label = "A", size = 8) +
+  annotate("text", x = 2.5, y = 28.5, label = "x", size = 7) +
+  annotate("text", x = 7.2, y = 28.5, label = "y", size = 7) +
+  annotate("text", x = 12, y = 28.5, label = "x", size = 7) +
+  annotate("text", x = 15, y = 28.5, label = "y", size = 7) +
+  ylim(-6, 30)
+
+plots[[i]] <- p1
+
+}
+plots
+```
+
+#### Peptidoform level
+
+
+
+```{r, fig.width=18, fig.height=10}
+#choose ptms of which you want to make lineplots 
+pepform_list1 <- rowData(pe[["pepformRel"]])[["conditionB"]] %>% as.data.frame %>%
+  arrange(adjPval) %>% head(10) %>% rownames
+
+plots <- list()
+
+for (i in pepform_list1){
+  #split is the separator between protein and mod in ptm column again
+  prot_ <- rowData(pe[["pepformRel"]])[i,]$Leading.razor.protein
+
+#Protein family sequence abundance
+protein <- assay(prot[["proteinLog"]], withDimnames = F)[prot_,] %>% as.data.frame() 
+colnames(protein) <- "LogIntensities"
+protein <- protein %>%
+  rownames_to_column("run") %>%
+  mutate(sequence = prot_,
+         FeatureType = "Protein",
+         subset = colData(prot)[run,]$subset, 
+         condition = colData(prot)[run,]$condition) %>%
+         arrange(condition, subset)
+
+#Peptidoform abundance
+pepform <- assay(pe[["peptidoformLog"]])[i,] %>% as.data.frame() 
+colnames(pepform) <- "LogIntensities"
+pepform <- pepform %>%
+  rownames_to_column("run") %>%
+  mutate(sequence = i,
+         FeatureType = "Peptidoform",
+         subset = colData(pe)[run,]$subset, 
+         condition = colData(pe)[run,]$condition) %>%
+         arrange(condition, subset)
+
+
+
+#Peptidoform abundance - normalised
+pepform_norm <- assay(pe[["pepformRel"]])[i,] %>% as.data.frame() 
+colnames(pepform_norm) <- "LogIntensities"
+pepform_norm <- pepform_norm %>%
+  rownames_to_column("run") %>%
+  mutate(sequence = paste(i, "norm"),
+         FeatureType = "Peptidoform - normalised",
+         subset = colData(pe)[run,]$subset, 
+         condition = colData(pe)[run,]$condition) %>%
+         arrange(condition, subset)
+
+
+#Peptidoform estimated
+sequence <- paste(rep(i, nrow(pepform)), "estimate")
+pep_estimate <- tibble(sequence)
+pep_estimate$run <- pepform$run
+protein$run <- pepform$run
+pep_estimate$subset <- pepform$subset
+pep_estimate$condition <- pepform$condition
+pep_estimate$FeatureType <- "Pepform_estimated"
+pep_estimate$LogIntensities <- NA
+
+
+fixeffects <- rowData(pe[["pepformRel"]])$msqrobModels[[i]] %>% getCoef
+pep_estimate[pep_estimate$condition=="A"&(pep_estimate$subset=="x"),]$LogIntensities <- 
+                                                    fixeffects[["(Intercept)"]]
+pep_estimate[pep_estimate$condition=="A"&(pep_estimate$subset=="y"),]$LogIntensities <- 
+   fixeffects[["(Intercept)"]] + fixeffects[["subsety"]]
+pep_estimate[pep_estimate$condition=="B"&(pep_estimate$subset=="x"),]$LogIntensities <- 
+   fixeffects[["(Intercept)"]] + fixeffects[["conditionB"]]
+pep_estimate[pep_estimate$condition=="B"&(pep_estimate$subset=="y"),]$LogIntensities <- 
+   fixeffects[["(Intercept)"]] + fixeffects[["conditionB"]] + fixeffects[["conditionB:subsety"]] + fixeffects[["subsety"]]
+
+pep_estimate <- pep_estimate %>% arrange(condition, subset)
+
+plot_df <- rbindlist(list(protein, pepform, pepform_norm, pep_estimate), fill = TRUE)
+plot_df$run <- forcats::fct_inorder(plot_df$run)
+plot_points <- plot_df %>% filter(FeatureType != "Pepform_estimated")
+
+#plot_df[plot_df$FeatureType == 'Model'][['FeatureType']] <- "PTM Summarized"
+#plot_df[plot_df$FeatureType == 'Peptide'][['FeatureType']] <- "PTM Feature"
+
+p1 <- plot_df %>% ggplot() +
+  geom_line(aes(x = run, y = LogIntensities , group = sequence, color = FeatureType), size =2) +
+  geom_point(data = plot_points, aes(x = run, y = LogIntensities , group = sequence, color = FeatureType), size = 5) +
+  geom_vline(data=data.frame(x = c(5.25, 9.5, 14.5)),
+             aes(xintercept=as.numeric(x)), linetype = "dashed") +
+  scale_colour_manual(values = c("Peptidoform - normalised" = "springgreen3", 
+                                 "Protein" = "dodgerblue2", 
+                                 "Pepform_estimated" = "palevioletred2", "Peptidoform" = "gray34"))  +
+  #scale_size_manual(values = c(1, 2)) +
+  labs(title = i, x = "BioReplicate", y = "LogIntensity") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 60, hjust=1, size = 16),
+        axis.text.y = element_text(size = 16),
+        legend.text=element_text(size=10),
+        axis.title.y = element_text(size = 22),
+        axis.title.x = element_text(size = 22),
+        title = element_text(size = 22),
+        strip.text = element_text(size = 16),
+        legend.title =  element_blank(),
+        legend.direction = "horizontal",
+        legend.position = c(0.5, 0.05)) +
+  annotate("text", x = 12.5, y = 29.5, label = "B", size = 8) +
+  annotate("text", x = 5, y = 29.5, label = "A", size = 8) +
+  annotate("text", x = 2.5, y = 28.5, label = "x", size = 7) +
+  annotate("text", x = 7.2, y = 28.5, label = "y", size = 7) +
+  annotate("text", x = 12, y = 28.5, label = "x", size = 7) +
+  annotate("text", x = 15, y = 28.5, label = "y", size = 7) +
+  ylim(-10, 30)
+
+plots[[i]] <- p1
+
+}
+plots
 ```
 

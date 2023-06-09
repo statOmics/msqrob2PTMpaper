@@ -111,8 +111,14 @@ nrow(assay(pe[["peptidoformRaw"]]))
 
 ### preprocessing
 
-We then filter out decoys and contaminants and filter out any peptidoforms that have fewer than 2 associated intensity values.
-We also perform a log transformation on the intensity values.
+Steps undertaken here: 
+Logtransformation
+Throw out peptides that have less than 2 measured intensity values
+Zero intensity is missing data and should be represented with NA instead of 0
+Throw out decoys and contaminants
+Center median normalisation
+
+This can be adapted according to your dataset needs
 
 ```{r}
 rowData(pe[["peptidoformRaw"]])$nNonZero <- rowSums(assay(pe[["peptidoformRaw"]]) > 0, na.rm = T)
@@ -322,9 +328,11 @@ In our case, a ptm is a unique protein - modification + location combination.
 rowData(pe[["pepformRel"]])$ptm <- ifelse(rowData(pe[["pepformRel"]])$mod != "",
                                           #if there is mod, add ptm
                                                mapply(function(x, y) {
+#here, the modifications are separated in the modifications column with a comma
 vector2 <- strsplit(y, ", ")[[1]]
 result <- lapply(vector2, function(i) paste(x, i, sep = "-"))
 final_result <- paste(unlist(result), collapse = ", ")
+#input = protein column (x) and column that contains the modifications (y)
 }, rowData(pe[["pepformRel"]])$Leading.razor.protein, rowData(pe[["pepformRel"]])$mod), 
 #else add empty string
                                                "")
